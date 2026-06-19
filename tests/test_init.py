@@ -83,3 +83,31 @@ def test_load_config_rejects_invalid_json(tmp_path, monkeypatch) -> None:
         SystemExit, match="invalid JSON in config file .*line 2, column 1"
     ):
         recall.load_config()
+
+
+def test_load_config_rejects_non_integer_clipboard_clear_seconds(
+    tmp_path, monkeypatch
+) -> None:
+    recall_dir = tmp_path / "recall"
+    recall_dir.mkdir()
+    (recall_dir / "config.json").write_text('{"clipboard_clear_seconds":"45"}\n')
+    monkeypatch.setenv("RECALL_DIR", str(recall_dir))
+
+    with pytest.raises(
+        SystemExit, match="field 'clipboard_clear_seconds' must be an integer"
+    ):
+        recall.load_config()
+
+
+def test_load_config_rejects_negative_clipboard_clear_seconds(
+    tmp_path, monkeypatch
+) -> None:
+    recall_dir = tmp_path / "recall"
+    recall_dir.mkdir()
+    (recall_dir / "config.json").write_text('{"clipboard_clear_seconds":-1}\n')
+    monkeypatch.setenv("RECALL_DIR", str(recall_dir))
+
+    with pytest.raises(
+        SystemExit, match="field 'clipboard_clear_seconds' must be non-negative"
+    ):
+        recall.load_config()

@@ -86,8 +86,23 @@ def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
     if path.exists():
         loaded = load_json_object_file(path, label="config file")
+        validate_config(loaded, path)
         cfg.update(loaded)
     return cfg
+
+
+def validate_config(cfg: dict[str, Any], path: Path) -> None:
+    clear_after = cfg.get("clipboard_clear_seconds")
+    if clear_after is None:
+        return
+    if isinstance(clear_after, bool) or not isinstance(clear_after, int):
+        sys.exit(
+            f"recall: config file {path} field 'clipboard_clear_seconds' must be an integer"
+        )
+    if clear_after < 0:
+        sys.exit(
+            f"recall: config file {path} field 'clipboard_clear_seconds' must be non-negative"
+        )
 
 
 def load_data(cfg: dict) -> dict:

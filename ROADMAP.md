@@ -2,8 +2,8 @@
 
 ## Near-term
 
-- Add `recall format --check` to verify canonical compact JSONL entries.
-- Add `recall format` to rewrite the data file into canonical compact JSONL.
+- Add `recall format --check` to verify canonical spaced single-line JSONL entries.
+- Add `recall format` to rewrite the data file into canonical spaced single-line JSONL (`json.dumps` default separators).
 - Make `doctor` report more precise data-file validation errors, including line-oriented guidance.
 - Add tests for CLI command output, not just data loading and normalization.
 
@@ -18,6 +18,6 @@
 ## Design decisions
 
 - `data.jsonl` is an index, not a content store.
-- Each entry should occupy one physical line.
+- Each entry should occupy one physical line; spaced single-line JSON is canonical (minified parses fine, but is not the stored form).
 - Multiline or large payloads belong in linked files via file entries.
 - Secret entries store references only; secret plaintext must stay in the vault.

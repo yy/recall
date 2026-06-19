@@ -90,7 +90,7 @@ For the secret tier you also need the [1Password CLI](https://developer.1passwor
 2. **Add entries** to the data file:
 
    ```jsonl
-   {"key":"orcid.self","kind":"id","value":"0000-0000-0000-0000","note":"My ORCID iD","tags":["identity"]}
+   {"key": "orcid.self", "kind": "id", "value": "0000-0000-0000-0000", "note": "My ORCID iD", "tags": ["identity"]}
    ```
 
 3. **Use it:**
@@ -108,12 +108,12 @@ For the secret tier you also need the [1Password CLI](https://developer.1passwor
 The data file is `data.jsonl`: one JSON object per physical line. Each object is a complete entry and must include a `key` field.
 
 ```jsonl
-{"key":"orcid.self","kind":"id","value":"0000-0000-0000-0000","note":"My ORCID iD","tags":["identity"]}
-{"key":"orcid.coauthor","kind":"id","value":"0000-0000-0000-0001","note":"A frequent collaborator","tags":["identity"]}
-{"key":"insurance.member-id","kind":"account","value":"MEMBER-ID-EXAMPLE","note":"Health insurance member ID","tags":["health"]}
-{"key":"insurance.portal","kind":"url","value":"https://example.com/login","note":"Claims portal; sign in with the member ID","tags":["health"]}
-{"key":"library-card","kind":"account","value":"LIBRARY-CARD-EXAMPLE","note":"Public library card number","tags":["library"]}
-{"key":"github.token","kind":"secret","backend":"1password","ref":"op://Private/GitHub/token","note":"GitHub personal access token","tags":["dev"]}
+{"key": "orcid.self", "kind": "id", "value": "0000-0000-0000-0000", "note": "My ORCID iD", "tags": ["identity"]}
+{"key": "orcid.coauthor", "kind": "id", "value": "0000-0000-0000-0001", "note": "A frequent collaborator", "tags": ["identity"]}
+{"key": "insurance.member-id", "kind": "account", "value": "MEMBER-ID-EXAMPLE", "note": "Health insurance member ID", "tags": ["health"]}
+{"key": "insurance.portal", "kind": "url", "value": "https://example.com/login", "note": "Claims portal; sign in with the member ID", "tags": ["health"]}
+{"key": "library-card", "kind": "account", "value": "LIBRARY-CARD-EXAMPLE", "note": "Public library card number", "tags": ["library"]}
+{"key": "github.token", "kind": "secret", "backend": "1password", "ref": "op://Private/GitHub/token", "note": "GitHub personal access token", "tags": ["dev"]}
 ```
 
 This format is intentionally boring. The lookup key, kind, value/ref, note, and tags are on the same line, so `rg` output has enough context for a human or agent:
@@ -121,6 +121,8 @@ This format is intentionally boring. The lookup key, kind, value/ref, note, and 
 ```console
 $ rg -n 'insurance|health|member-id' ~/git/dotfiles/recall/data.jsonl
 ```
+
+Only the one-object-per-line rule matters; whitespace *within* a line is free. The canonical form (what `recall format` emits) is one space after each `:` and `,`, exactly what `json.dumps` produces by default. Minified lines parse identically, but the spaced form is easier to read and hand-edit.
 
 JSONL has no comments. Keep commentary in `note`, in a linked file, or in project docs such as `README.md` or `ROADMAP.md`. That constraint is useful here: the data file stays machine-parseable, line-oriented, and unambiguous.
 
@@ -147,7 +149,7 @@ The data file is an index, not a content store. Keep each entry and each field v
 For multiline or large reusable content, store the content in a separate file and point to it:
 
 ```jsonl
-{"key":"email.reply-template","kind":"file","value":"~/git/dotfiles/recall/snippets/reply.md","note":"Standard email reply template","tags":["email"]}
+{"key": "email.reply-template", "kind": "file", "value": "~/git/dotfiles/recall/snippets/reply.md", "note": "Standard email reply template", "tags": ["email"]}
 ```
 
 `recall` rejects multiline `value`, `note`, `ref`, `backend`, `kind`, and tag strings. Use a `file` entry when the payload does not fit on one line.
@@ -199,7 +201,7 @@ insurance/  (namespace)
 Secrets store only a reference:
 
 ```jsonl
-{"key":"github.token","kind":"secret","backend":"1password","ref":"op://Private/GitHub/token"}
+{"key": "github.token", "kind": "secret", "backend": "1password", "ref": "op://Private/GitHub/token"}
 ```
 
 The `op://` reference has this shape:
