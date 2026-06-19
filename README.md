@@ -30,7 +30,7 @@ github.token is a secret → op://Private/GitHub/token
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [The data file](#the-data-file)
-- [Multiline values and notes](#multiline-values-and-notes)
+- [One-line values and file-backed data](#one-line-values-and-file-backed-data)
 - [Commands](#commands)
 - [How secrets work](#how-secrets-work)
 - [Configuration](#configuration)
@@ -74,17 +74,26 @@ For the secret tier you also need the [1Password CLI](https://developer.1passwor
 
 ## Quickstart
 
-1. **Create a data file** anywhere you like (a private repo is ideal):
+1. **Run init** and choose where the private data file should live:
 
-   ```yaml
-   # e.g., ~/git/dotfiles/recall/data.yaml
-   orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD"}
+   ```console
+   $ recall init
+   Where should recall store data.yaml? [/Users/you/.config/recall/data.yaml]: ~/git/dotfiles/recall/data.yaml
+   Seconds before copied secrets are cleared [45]:
+   Default secret backend [1password]:
+   Create a starter data file? [Y/n]:
    ```
 
-2. **Point `recall` at it** via `~/.config/recall/config.yaml`:
+   For a scriptable setup, pass the choices directly:
+
+   ```console
+   $ recall init --data-file ~/git/dotfiles/recall/data.yaml --yes
+   ```
+
+2. **Add entries** to the data file:
 
    ```yaml
-   data_file: ~/git/dotfiles/recall/data.yaml
+   orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD"}
    ```
 
 3. **Use it:**
@@ -105,10 +114,10 @@ The recommended data file is a flat YAML mapping: one dotted key per entry, one 
 orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD", tags: [identity]}
 orcid.coauthor: {kind: id, value: "0000-0000-0000-0000", note: "A frequent collaborator", tags: [identity]}
 
-insurance.member-id: {kind: account, value: "XJ4920516", note: "Health insurance member ID", tags: [health]}
+insurance.member-id: {kind: account, value: "MEMBER-ID-EXAMPLE", note: "Health insurance member ID", tags: [health]}
 insurance.portal: {kind: url, value: "https://example.com/login", note: "Claims portal; sign in with the member ID", tags: [health]}
 
-library-card: {kind: account, value: "21234567890", note: "Public library card number", tags: [library]}
+library-card: {kind: account, value: "LIBRARY-CARD-EXAMPLE", note: "Public library card number", tags: [library]}
 
 github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token", note: "GitHub personal access token", tags: [dev]}
 ```
@@ -131,8 +140,8 @@ Nested YAML is still accepted for compatibility. Internally, `recall` normalizes
 
 | Field | Applies to | Meaning |
 |---|---|---|
-| `kind` | all entries | `url`, `id`, `account`, `note`, `snippet`, … (free-form), or `secret` |
-| `value` | non-secret entries | the value returned/copied |
+| `kind` | all entries | `url`, `file`, `id`, `account`, `note`, `snippet`, … (free-form), or `secret` |
+| `value` | non-secret entries | the value returned/copied; for `file`, this is a path |
 | `backend` | secret entries | `1password` (default) or `keychain` |
 | `ref` | secret entries | a vault reference, e.g. `op://Private/GitHub/token` |
 | `note` | optional | shown in `search` / `list`; never affects the value |
@@ -140,43 +149,28 @@ Nested YAML is still accepted for compatibility. Internally, `recall` normalizes
 
 ---
 
-## Multiline values and notes
+## One-line values and file-backed data
 
-Keep ordinary entries on one line. For short snippets with meaningful line breaks, escape the newline characters:
+The data file is an index, not a content store. Keep each entry and each field value to one physical line.
 
-```yaml
-email.signature: {kind: snippet, value: "Best,\nYY\n", note: "Email signature", tags: [email]}
-```
-
-For longer snippets, use block YAML for that one entry:
-
-```yaml
-email.signature:
-  kind: snippet
-  note: "Email signature"
-  tags: [email]
-  value: |
-    Best,
-    YY
-```
-
-For long notes, keep a short searchable `note` if possible and move extra context into the value, tags, or an external file. If the note itself really needs multiple lines, `recall search`, `recall list`, and `recall tags` collapse it to one display line:
-
-```yaml
-insurance.portal:
-  kind: url
-  value: "https://example.com/login"
-  tags: [health]
-  note: >
-    Claims portal. Sign in with the member ID.
-    Used for reimbursement forms and EOB lookup.
-```
-
-For large reusable text, prefer a file reference:
+For multiline or large reusable content, store the content in a separate file and point to it:
 
 ```yaml
 email.reply-template: {kind: file, value: "~/git/dotfiles/recall/snippets/reply.md", note: "Standard email reply template", tags: [email]}
 ```
+
+That keeps `data.yaml` grep-friendly and keeps each search hit self-contained. `recall` rejects multiline `value`, `note`, `ref`, `backend`, `kind`, and tag strings; use `kind: file` when the payload does not fit on one line.
+
+For file-backed entries:
+
+```console
+$ recall email.reply-template --show
+~/git/dotfiles/recall/snippets/reply.md
+
+$ recall open email.reply-template
+```
+
+`recall <key>` copies the file path. `recall open <key>` opens the file with the system default app.
 
 ---
 
@@ -184,17 +178,20 @@ email.reply-template: {kind: file, value: "~/git/dotfiles/recall/snippets/reply.
 
 | Command | What it does |
 |---|---|
+| `recall init` | create `config.yaml` and the first data file |
 | `recall <key>` | copy a non-secret value to the clipboard (shorthand for `get`) |
 | `recall get <key> [--show]` | same; `--show` prints the value instead of copying |
 | `recall secret <key>` | **open the item in 1Password** so you copy it by hand |
 | `recall secret <key> --copy` | resolve via `op` and copy to the clipboard (auto-clears) |
 | `recall secret <key> --show` | resolve and print the value (discouraged) |
-| `recall open <key>` | open a `url` entry in your browser |
+| `recall open <key>` | open a `url` or `file` entry |
 | `recall search <query>` | search keys, notes, and tags (never prints secret values) |
 | `recall list [prefix]` | list entries, optionally under a namespace |
 | `recall tags <tag>` | list entries carrying a tag |
 | `recall json [key]` | dump a subtree as JSON |
+| `recall export` | alias for `recall json` (whole tree) |
 | `recall doctor` | validate the data file and environment |
+| `recall help` | show usage |
 
 Asking for a **namespace** instead of an entry lists its children:
 
@@ -216,6 +213,30 @@ A secret entry stores only a reference:
 ```yaml
 github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token"}
 ```
+
+### Creating the 1Password reference
+
+First store the secret itself in 1Password, usually as a Password or API Credential item. Put it in the vault you want to use, give the item a stable name, and put the actual credential in the field you want `op` to read. 1Password's default password/token field is usually named `password` or `credential`.
+
+The `op://` reference has this shape:
+
+```text
+op://<vault>/<item>/<field>
+```
+
+For example, if the vault is `Private`, the item is `GitHub`, and the token is in a field named `token`, use:
+
+```yaml
+github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token"}
+```
+
+To check the field names, run:
+
+```console
+$ op item get GitHub --vault Private
+```
+
+Use the visible field label in the final path segment. If names contain spaces, keep them in the reference exactly as 1Password shows them, or rename the item/field to something simple like `token` to make the reference grep-friendly.
 
 There are three ways to interact with it, in increasing order of exposure:
 
@@ -255,6 +276,8 @@ Right now `recall` supports **1Password only** as a secret backend. (A `keychain
 ## Configuration
 
 `recall` reads `~/.config/recall/config.yaml` (override the directory with `$XDG_CONFIG_HOME` or `$RECALL_DIR`):
+
+`recall init` writes this file for you. Edit it directly only when you want to move the data file or change defaults.
 
 ```yaml
 # Where the data file actually lives. It does NOT have to be in the config dir.
@@ -337,9 +360,10 @@ Other properties:
 git clone https://github.com/yy/recall && cd recall
 uv tool install --editable . --force    # `recall` now tracks your source edits
 uv run --with pyyaml recall.py doctor   # or run straight from source
+uv run pytest
 ```
 
-The whole thing is one file (`recall.py`, ~550 lines) with a single runtime dependency, PyYAML. The core lookup is a plain function, so a future MCP server or other front-end can wrap it without going through the CLI.
+The whole thing is one file (`recall.py`) with a single runtime dependency, PyYAML. The core lookup is a plain function, so a future MCP server or other front-end can wrap it without going through the CLI.
 
 ## License
 

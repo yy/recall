@@ -19,9 +19,11 @@ Data model (``data.yaml``): one line per dotted key, with an inline YAML map::
     orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD"}
     uva.irb: {kind: url, value: "https://...", note: "Use NetBadge"}
     github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token"}
+    email.reply-template: {kind: file, value: "~/recall/snippets/reply.md"}
 
-Nested YAML mappings are still accepted for compatibility. A mapping with a
-``kind:`` field is an *entry*; one without is a *namespace*.
+Store multiline content in files and point at them with ``kind: file``. Nested
+YAML mappings are still accepted for compatibility. A mapping with a ``kind:``
+field is an *entry*; one without is a *namespace*.
 """
 
 from __future__ import annotations
@@ -52,6 +54,14 @@ DEFAULT_CONFIG = {
     "default_backend": "1password",
 }
 
+STARTER_DATA = """# One dotted key per entry, one entry per line.
+# Non-secret example:
+# orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD", tags: [identity]}
+#
+# Secret example. The value lives in 1Password; recall stores only the reference.
+# github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token", note: "GitHub token", tags: [dev]}
+"""
+
 
 # --------------------------------------------------------------------------- #
 # Paths & loading
@@ -61,6 +71,10 @@ def config_dir() -> Path:
         return Path(env).expanduser()
     base = os.environ.get("XDG_CONFIG_HOME", "~/.config")
     return Path(base).expanduser() / "recall"
+
+
+def config_path() -> Path:
+    return config_dir() / "config.yaml"
 
 
 def data_path(cfg: dict) -> Path:
@@ -87,10 +101,15 @@ def data_path(cfg: dict) -> Path:
 
 
 def load_config() -> dict:
-    path = config_dir() / "config.yaml"
+    path = config_path()
     cfg = dict(DEFAULT_CONFIG)
     if path.exists():
-        loaded = yaml.safe_load(path.read_text()) or {}
+        try:
+            loaded = yaml.safe_load(path.read_text()) or {}
+        except yaml.YAMLError as exc:
+            sys.exit(f"recall: {path} is not valid YAML: {exc}")
+        if not isinstance(loaded, dict):
+            sys.exit(f"recall: {path} must be a YAML mapping at the top level")
         cfg.update(loaded)
     return cfg
 
@@ -105,9 +124,7 @@ def load_data(cfg: dict) -> dict:
     data = yaml.safe_load(path.read_text()) or {}
     if not isinstance(data, dict):
         sys.exit(f"recall: {path} must be a YAML mapping at the top level")
-    normalized = normalize_data(data, path)
-    validate_tree(normalized, "", path)
-    return normalized
+    return normalize_data(data, path)
 
 
 def normalize_data(data: dict, path: Path) -> dict:
@@ -120,6 +137,7 @@ def normalize_data(data: dict, path: Path) -> dict:
         if any(not part for part in parts):
             sys.exit(f"recall: {path}: invalid empty key segment in '{key}'")
         insert_entry(root, parts, node, key, path)
+    validate_tree(root, "", path)
     return root
 
 
@@ -156,6 +174,7 @@ def merge_nodes(existing: Any, incoming: Any, key: str, path: Path) -> Any:
 
 def validate_tree(node: Any, dotted: str, path: Path) -> None:
     if is_entry(node):
+        validate_entry(node, dotted, path)
         return
     if not isinstance(node, dict):
         label = dotted or "<root>"
@@ -165,6 +184,24 @@ def validate_tree(node: Any, dotted: str, path: Path) -> None:
     for key, child in node.items():
         child_path = f"{dotted}.{key}" if dotted else str(key)
         validate_tree(child, child_path, path)
+
+
+def validate_entry(entry: dict, dotted: str, path: Path) -> None:
+    label = dotted or "<entry>"
+    for field in ("kind", "value", "backend", "ref", "note"):
+        value = entry.get(field)
+        if isinstance(value, str) and "\n" in value:
+            sys.exit(
+                f"recall: {path}: '{label}' field '{field}' must be one line; "
+                "store multiline content in a file and use kind: file"
+            )
+    tags = entry.get("tags")
+    if tags is not None and not isinstance(tags, list):
+        sys.exit(f"recall: {path}: '{label}' field 'tags' must be a list")
+    if isinstance(tags, list):
+        for tag in tags:
+            if isinstance(tag, str) and "\n" in tag:
+                sys.exit(f"recall: {path}: '{label}' tags must be one-line strings")
 
 
 # --------------------------------------------------------------------------- #
@@ -272,8 +309,114 @@ def vault_read(entry: dict, cfg: dict) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Init helpers
+# --------------------------------------------------------------------------- #
+def prompt_value(label: str, default: str) -> str:
+    response = input(f"{label} [{default}]: ").strip()
+    return response or default
+
+
+def prompt_yes_no(label: str, default: bool = False) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    response = input(f"{label} [{suffix}]: ").strip().lower()
+    if not response:
+        return default
+    return response in {"y", "yes"}
+
+
+def write_text_file(path: Path, text: str, force: bool = False) -> bool:
+    if path.exists() and not force:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return True
+
+
+def build_config_text(
+    data_file: str, clipboard_clear_seconds: int, default_backend: str
+) -> str:
+    return (
+        f"data_file: {data_file}\n"
+        f"clipboard_clear_seconds: {clipboard_clear_seconds}\n"
+        f"default_backend: {default_backend}\n"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
+def cmd_init(args, cfg) -> int:
+    default_data_file = str(config_dir() / "data.yaml")
+    interactive = not args.yes
+
+    data_file = args.data_file
+    if not data_file and interactive:
+        data_file = prompt_value(
+            "Where should recall store data.yaml?", default_data_file
+        )
+    data_file = data_file or default_data_file
+
+    clear_seconds = args.clipboard_clear_seconds
+    if clear_seconds is None and interactive:
+        raw = prompt_value(
+            "Seconds before copied secrets are cleared",
+            str(DEFAULT_CONFIG["clipboard_clear_seconds"]),
+        )
+        try:
+            clear_seconds = int(raw)
+        except ValueError:
+            print("recall: clipboard clear seconds must be an integer", file=sys.stderr)
+            return 1
+    if clear_seconds is None:
+        clear_seconds = int(DEFAULT_CONFIG["clipboard_clear_seconds"])
+    if clear_seconds < 0:
+        print("recall: clipboard clear seconds must be non-negative", file=sys.stderr)
+        return 1
+
+    backend = args.default_backend
+    if not backend and interactive:
+        backend = prompt_value(
+            "Default secret backend", str(DEFAULT_CONFIG["default_backend"])
+        )
+    backend = backend or str(DEFAULT_CONFIG["default_backend"])
+
+    sample = args.sample
+    if sample is None and interactive:
+        sample = prompt_yes_no("Create a starter data file?", True)
+    sample = True if sample is None else sample
+
+    cfg_path = config_path()
+    data_path_for_write = Path(data_file).expanduser()
+
+    if cfg_path.exists() and not args.force:
+        if interactive and prompt_yes_no(f"{cfg_path} exists. Overwrite it?", False):
+            overwrite_config = True
+        else:
+            print(
+                f"recall: config already exists at {cfg_path} (use --force)",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        overwrite_config = True
+
+    config_text = build_config_text(data_file, clear_seconds, backend)
+    write_text_file(cfg_path, config_text, force=overwrite_config)
+    print(f"wrote config: {cfg_path}")
+
+    if data_path_for_write.exists():
+        print(f"data file already exists: {data_path_for_write}")
+    else:
+        text = STARTER_DATA if sample else ""
+        write_text_file(data_path_for_write, text, force=False)
+        print(f"created data file: {data_path_for_write}")
+
+    print("\nNext steps:")
+    print(f"  edit {data_path_for_write}")
+    print("  run: recall doctor")
+    return 0
+
+
 def cmd_get(args, cfg) -> int:
     data = load_data(cfg)
     node = resolve(data, args.key)
@@ -412,14 +555,21 @@ def cmd_open(args, cfg) -> int:
     if not is_entry(node):
         print(f"recall: no such entry '{args.key}'", file=sys.stderr)
         return 1
-    if entry_kind(node) in SECRET_KINDS:
+    kind = entry_kind(node)
+    if kind in SECRET_KINDS:
         print("recall: refusing to open a secret", file=sys.stderr)
+        return 1
+    if kind not in {"url", "file"}:
+        print(
+            f"recall: '{args.key}' is a {kind}, not something to open", file=sys.stderr
+        )
         return 1
     value = entry_value(node)
     if not value:
         print(f"recall: '{args.key}' has no value to open", file=sys.stderr)
         return 1
-    subprocess.run(["open", str(value)], check=False)
+    target = str(Path(str(value)).expanduser()) if kind == "file" else str(value)
+    subprocess.run(["open", target], check=False)
     audit("open", args.key)
     return 0
 
@@ -561,6 +711,7 @@ def _suggest(data: dict, key: str) -> None:
 # Argument parsing
 # --------------------------------------------------------------------------- #
 SUBCOMMANDS = {
+    "init",
     "get",
     "secret",
     "open",
@@ -581,6 +732,44 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"recall {__version__}")
     sub = p.add_subparsers(dest="command")
 
+    init = sub.add_parser("init", help="create recall config and data file")
+    init.add_argument("--data-file", help="path to the data.yaml file to use")
+    init.add_argument(
+        "--clipboard-clear-seconds",
+        type=int,
+        help="seconds before secrets copied with --copy are cleared",
+    )
+    init.add_argument(
+        "--default-backend",
+        default="",
+        help="default secret backend for entries without backend",
+    )
+    sample = init.add_mutually_exclusive_group()
+    sample.add_argument(
+        "--sample",
+        dest="sample",
+        action="store_true",
+        default=None,
+        help="create starter comments in a new data file",
+    )
+    sample.add_argument(
+        "--no-sample",
+        dest="sample",
+        action="store_false",
+        help="create an empty data file",
+    )
+    init.add_argument(
+        "--yes",
+        action="store_true",
+        help="accept defaults for omitted options without prompting",
+    )
+    init.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing config.yaml",
+    )
+    init.set_defaults(func=cmd_init)
+
     g = sub.add_parser("get", help="copy a non-secret value to the clipboard")
     g.add_argument("key")
     g.add_argument("--show", action="store_true", help="print value instead of copying")
@@ -600,7 +789,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.set_defaults(func=cmd_secret)
 
-    o = sub.add_parser("open", help="open a url entry in the browser")
+    o = sub.add_parser("open", help="open a url or file entry")
     o.add_argument("key")
     o.set_defaults(func=cmd_open)
 
@@ -626,6 +815,8 @@ def build_parser() -> argparse.ArgumentParser:
     ex = sub.add_parser("export", help="alias for: json (whole tree)")
     ex.set_defaults(func=lambda a, c: cmd_json(argparse.Namespace(key=""), c))
 
+    sub.add_parser("help", help="show this help message")
+
     return p
 
 
@@ -637,7 +828,7 @@ def main(argv: list[str] | None = None) -> int:
         argv = ["get"] + argv
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not getattr(args, "command", None):
+    if not getattr(args, "command", None) or args.command == "help":
         parser.print_help()
         return 0
     return args.func(args, cfg)

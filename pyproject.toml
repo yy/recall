@@ -15,6 +15,9 @@ classifiers = [
 ]
 dependencies = ["pyyaml>=6.0"]
 
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
 [project.urls]
 Homepage = "https://github.com/yy/recall"
 Repository = "https://github.com/yy/recall"
@@ -30,4 +33,4 @@ build-backend = "hatchling.build"
 only-include = ["recall.py"]
 
 [tool.hatch.build.targets.sdist]
-include = ["recall.py", "README.md", "examples/"]
+include = ["recall.py", "README.md", "LICENSE", "examples/", "tests/"]
