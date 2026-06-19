@@ -38,6 +38,7 @@ from typing import Any
 __version__ = "0.1.0"
 
 SECRET_KINDS = {"secret"}
+SUPPORTED_SECRET_BACKENDS = {"1password", "keychain", "op"}
 # A node is an entry if it is a mapping carrying one of these marker fields.
 ENTRY_MARKERS = ("kind", "value", "ref")
 
@@ -77,8 +78,15 @@ def data_path(cfg: dict) -> Path:
     if env := os.environ.get("RECALL_DATA_FILE"):
         return Path(env).expanduser()
     if cfg.get("data_file"):
-        return Path(str(cfg["data_file"])).expanduser()
+        return resolve_config_data_path(str(cfg["data_file"]))
     return config_dir() / "data.jsonl"
+
+
+def resolve_config_data_path(raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return path
+    return config_dir() / path
 
 
 def load_config() -> dict:
@@ -91,7 +99,34 @@ def load_config() -> dict:
     return cfg
 
 
+def load_config_for_doctor() -> tuple[dict[str, Any], str | None]:
+    """Load config without aborting so `doctor` can report config problems."""
+    path = config_path()
+    cfg = dict(DEFAULT_CONFIG)
+    if not path.exists():
+        return cfg, None
+    try:
+        loaded = load_json_object_file(path, label="config file")
+        validate_config(loaded, path)
+    except SystemExit as exc:
+        return cfg, str(exc)
+    cfg.update(loaded)
+    return cfg, None
+
+
 def validate_config(cfg: dict[str, Any], path: Path) -> None:
+    data_file = cfg.get("data_file")
+    if data_file is not None and not isinstance(data_file, str):
+        sys.exit(f"recall: config file {path} field 'data_file' must be a string")
+
+    default_backend = cfg.get("default_backend")
+    if default_backend is not None and not isinstance(default_backend, str):
+        sys.exit(f"recall: config file {path} field 'default_backend' must be a string")
+    if default_backend is not None:
+        validate_backend_name(
+            default_backend, path=path, label="config file", field="default_backend"
+        )
+
     clear_after = cfg.get("clipboard_clear_seconds")
     if clear_after is None:
         return
@@ -112,13 +147,22 @@ def load_data(cfg: dict) -> dict:
             f"recall: no data file at {path}\n"
             f"point config.json 'data_file' at it, set RECALL_DATA_FILE, or see 'recall doctor'."
         )
-    entries = load_jsonl_entries(path)
-    return normalize_data(entries, path)
+    numbered_entries = load_jsonl_entries(path)
+    line_numbers = [line_number for line_number, _ in numbered_entries]
+    entries = [entry for _, entry in numbered_entries]
+    return normalize_data(entries, path, line_numbers=line_numbers)
 
 
 def load_json_object_file(path: Path, *, label: str) -> dict[str, Any]:
     try:
-        loaded = json.loads(path.read_text())
+        text = path.read_text()
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        sys.exit(f"recall: can't read {label} {path}: {detail}")
+    except UnicodeDecodeError:
+        sys.exit(f"recall: {label} {path} must be valid UTF-8 text")
+    try:
+        loaded = json.loads(text)
     except json.JSONDecodeError as exc:
         sys.exit(
             f"recall: invalid JSON in {label} {path} "
@@ -129,9 +173,16 @@ def load_json_object_file(path: Path, *, label: str) -> dict[str, Any]:
     return loaded
 
 
-def load_jsonl_entries(path: Path) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+def load_jsonl_entries(path: Path) -> list[tuple[int, dict[str, Any]]]:
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        sys.exit(f"recall: can't read data file {path}: {detail}")
+    except UnicodeDecodeError:
+        sys.exit(f"recall: data file {path} must be valid UTF-8 text")
+    entries: list[tuple[int, dict[str, Any]]] = []
+    for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
@@ -143,14 +194,20 @@ def load_jsonl_entries(path: Path) -> list[dict[str, Any]]:
             )
         if not isinstance(loaded, dict):
             sys.exit(f"recall: {path}: line {line_number} must be a JSON object")
-        entries.append(loaded)
+        entries.append((line_number, loaded))
     return entries
 
 
-def normalize_data(records: list[dict[str, Any]], path: Path) -> dict:
+def normalize_data(
+    records: list[dict[str, Any]], path: Path, *, line_numbers: list[int] | None = None
+) -> dict:
     """Convert JSONL records to the internal namespace tree."""
     root: dict[str, Any] = {}
-    for line_number, record in enumerate(records, start=1):
+    if line_numbers is None:
+        line_numbers = list(range(1, len(records) + 1))
+    elif len(line_numbers) != len(records):
+        raise ValueError("line_numbers length must match records length")
+    for line_number, record in zip(line_numbers, records):
         key = record.get("key")
         if not isinstance(key, str):
             sys.exit(f"recall: {path}: line {line_number} must have string field 'key'")
@@ -170,12 +227,36 @@ def normalize_data(records: list[dict[str, Any]], path: Path) -> dict:
 
 
 def flatten_entries(data: dict) -> list[dict[str, Any]]:
+    # Preserve the file's own order (entries grouped under each namespace in
+    # first-seen order) rather than re-sorting, so `format` keeps the author's
+    # curated grouping. walk_entries yields in tree-insertion order.
     records = []
-    for key, entry in sorted(walk_entries(data)):
+    for key, entry in walk_entries(data):
         record = {"key": key}
         record.update(entry)
         records.append(record)
     return records
+
+
+CANONICAL_RECORD_FIELDS = ("key", "kind", "value", "backend", "ref", "note", "tags")
+
+
+def canonicalize_record(record: dict[str, Any]) -> dict[str, Any]:
+    ordered: dict[str, Any] = {}
+    for field in CANONICAL_RECORD_FIELDS:
+        if field in record:
+            ordered[field] = record[field]
+    for field in sorted(record):
+        if field not in ordered:
+            ordered[field] = record[field]
+    return ordered
+
+
+def format_jsonl(records: list[dict[str, Any]]) -> str:
+    return "".join(
+        json.dumps(canonicalize_record(record), ensure_ascii=False) + "\n"
+        for record in records
+    )
 
 
 def insert_entry(root: dict, parts: list[str], node: Any, key: str, path: Path) -> None:
@@ -225,6 +306,13 @@ def validate_tree(node: Any, dotted: str, path: Path) -> None:
 
 def validate_entry(entry: dict, dotted: str, path: Path) -> None:
     label = dotted or "<entry>"
+    kind = entry.get("kind")
+    if not isinstance(kind, str):
+        sys.exit(f"recall: {path}: '{label}' field 'kind' must be a string")
+    for field in ("value", "backend", "ref", "note"):
+        value = entry.get(field)
+        if value is not None and not isinstance(value, str):
+            sys.exit(f"recall: {path}: '{label}' field '{field}' must be a string")
     for field in ("kind", "value", "backend", "ref", "note"):
         value = entry.get(field)
         if isinstance(value, str) and "\n" in value:
@@ -232,12 +320,26 @@ def validate_entry(entry: dict, dotted: str, path: Path) -> None:
                 f"recall: {path}: '{label}' field '{field}' must be one line; "
                 "store multiline content in a file and use a file entry"
             )
+    backend = entry.get("backend")
+    if backend is not None:
+        if not isinstance(backend, str):
+            sys.exit(f"recall: {path}: '{label}' field 'backend' must be a string")
+        validate_backend_name(
+            backend, path=path, label=f"entry '{label}'", field="backend"
+        )
+    if kind in SECRET_KINDS:
+        if not entry.get("ref"):
+            sys.exit(f"recall: {path}: '{label}' secret entries must include 'ref'")
+    elif entry.get("value") in (None, ""):
+        sys.exit(f"recall: {path}: '{label}' non-secret entries must include 'value'")
     tags = entry.get("tags")
     if tags is not None and not isinstance(tags, list):
         sys.exit(f"recall: {path}: '{label}' field 'tags' must be a list")
     if isinstance(tags, list):
         for tag in tags:
-            if isinstance(tag, str) and "\n" in tag:
+            if not isinstance(tag, str):
+                sys.exit(f"recall: {path}: '{label}' tags must be one-line strings")
+            if "\n" in tag:
                 sys.exit(f"recall: {path}: '{label}' tags must be one-line strings")
 
 
@@ -286,8 +388,39 @@ def entry_tags(entry: dict) -> list[str]:
     return [str(tags)]
 
 
+def runtime_entry_value(entry: dict, cfg: dict) -> str | None:
+    value = entry_value(entry)
+    if value is None:
+        return None
+    if entry_kind(entry) != "file":
+        return str(value)
+
+    path = Path(str(value)).expanduser()
+    if path.is_absolute():
+        return str(path)
+    return str(data_path(cfg).parent / path)
+
+
+def entry_backend(entry: dict, cfg: dict) -> str:
+    return str(entry.get("backend", cfg.get("default_backend", "1password")))
+
+
+def secret_usage_hint(key: str, entry: dict, cfg: dict) -> str:
+    backend = entry_backend(entry, cfg)
+    if backend == "keychain":
+        return f"  run: recall secret {key} --copy   (resolves it via Keychain and copies it)"
+    return f"  run: recall secret {key}   (opens it in 1Password to copy by hand)"
+
+
 def one_line(text: Any) -> str:
     return " ".join(str(text).split())
+
+
+def validate_backend_name(backend: str, *, path: Path, label: str, field: str) -> None:
+    if backend in SUPPORTED_SECRET_BACKENDS:
+        return
+    choices = ", ".join(sorted(SUPPORTED_SECRET_BACKENDS))
+    sys.exit(f"recall: {label} {path} field '{field}' must be one of: {choices}")
 
 
 # --------------------------------------------------------------------------- #
@@ -318,6 +451,7 @@ def audit(command: str, key: str) -> None:
     path = config_dir() / "audit.log"
     stamp = _dt.datetime.now().isoformat(timespec="seconds")
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a") as fh:
             fh.write(f"{stamp}\t{command}\t{key}\n")
     except OSError:
@@ -325,7 +459,7 @@ def audit(command: str, key: str) -> None:
 
 
 def vault_read(entry: dict, cfg: dict) -> str:
-    backend = entry.get("backend", cfg.get("default_backend", "1password"))
+    backend = entry_backend(entry, cfg)
     ref = entry.get("ref")
     if not ref:
         sys.exit("recall: secret entry has no 'ref'")
@@ -370,6 +504,14 @@ def write_text_file(path: Path, text: str, force: bool = False) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     return True
+
+
+def validate_init_write_target(path: Path, *, label: str) -> str | None:
+    if path.exists() and not path.is_file():
+        return f"recall: {label} path must be a file: {path}"
+    if path.parent.exists() and not path.parent.is_dir():
+        return f"recall: can't create {label} {path}: parent path is not a directory"
+    return None
 
 
 def build_config_text(
@@ -425,6 +567,10 @@ def cmd_init(args, cfg) -> int:
             "Default secret backend", str(DEFAULT_CONFIG["default_backend"])
         )
     backend = backend or str(DEFAULT_CONFIG["default_backend"])
+    if backend not in SUPPORTED_SECRET_BACKENDS:
+        choices = ", ".join(sorted(SUPPORTED_SECRET_BACKENDS))
+        print(f"recall: default backend must be one of: {choices}", file=sys.stderr)
+        return 1
 
     sample = args.sample
     if sample is None and interactive:
@@ -432,7 +578,15 @@ def cmd_init(args, cfg) -> int:
     sample = True if sample is None else sample
 
     cfg_path = config_path()
-    data_path_for_write = Path(data_file).expanduser()
+    data_path_for_write = resolve_config_data_path(data_file)
+
+    for label, path in (
+        ("config file", cfg_path),
+        ("data file", data_path_for_write),
+    ):
+        if error := validate_init_write_target(path, label=label):
+            print(error, file=sys.stderr)
+            return 1
 
     if cfg_path.exists() and not args.force:
         if interactive and prompt_yes_no(f"{cfg_path} exists. Overwrite it?", False):
@@ -478,15 +632,12 @@ def cmd_get(args, cfg) -> int:
     if kind in SECRET_KINDS:
         ref = node.get("ref", "(no ref)")
         print(f"{args.key} is a secret → {ref}")
-        print(
-            f"  run: recall secret {args.key}   (opens it in 1Password to copy by hand)"
-        )
+        print(secret_usage_hint(args.key, node, cfg))
         return 0
-    value = entry_value(node)
+    value = runtime_entry_value(node, cfg)
     if value is None:
         print(f"recall: entry '{args.key}' has no value", file=sys.stderr)
         return 1
-    value = str(value)
     if args.show:
         print(value)
     else:
@@ -511,25 +662,27 @@ def cmd_secret(args, cfg) -> int:
 
     # Default: open the item in the vault app and let the human copy it. The
     # secret value never passes through recall — the strongest agent boundary.
-    if not (args.copy or args.show):
-        audit("secret-open", args.key)
-        return open_in_vault(node, cfg, args.key)
+    if not args.copy:
+        status = open_in_vault(node, cfg, args.key)
+        if status == 0:
+            audit("secret-open", args.key)
+        return status
 
     # Opt-in: resolve the value via the vault CLI (for scripting / piping).
     value = vault_read(node, cfg)
+    secs = cfg.get("clipboard_clear_seconds", 45)
+    to_clipboard(value, clear_after=secs)
     audit("secret-copy", args.key)
-    if args.show:
-        print(value)
-    else:
-        secs = cfg.get("clipboard_clear_seconds", 45)
-        to_clipboard(value, clear_after=secs)
+    if secs and secs > 0:
         print(f"copied {args.key} to clipboard (clears in {secs}s)")
+    else:
+        print(f"copied {args.key} to clipboard (auto-clear disabled)")
     return 0
 
 
 def open_in_vault(entry: dict, cfg: dict, key: str) -> int:
     """Open the entry in its vault app for manual copy (no value touches recall)."""
-    backend = entry.get("backend", cfg.get("default_backend", "1password"))
+    backend = entry_backend(entry, cfg)
     ref = entry.get("ref")
     if backend in ("1password", "op"):
         if not ref:
@@ -537,12 +690,19 @@ def open_in_vault(entry: dict, cfg: dict, key: str) -> int:
             return 1
         link = onepassword_deeplink(ref)
         if link:
-            subprocess.run(["open", link], check=False)
-            print(f"opened {key} in 1Password — copy the secret manually")
-        else:
-            subprocess.run(["open", "onepassword://"], check=False)
+            result = subprocess.run(["open", link], check=False)
+            if result.returncode == 0:
+                print(f"opened {key} in 1Password — copy the secret manually")
+                return 0
+            print(f"recall: failed to open 1Password item for '{key}'", file=sys.stderr)
+            return 1
+
+        result = subprocess.run(["open", "onepassword://"], check=False)
+        if result.returncode == 0:
             print(f"opened 1Password — find: {ref}")
-        return 0
+            return 0
+        print("recall: failed to open 1Password", file=sys.stderr)
+        return 1
     if backend == "keychain":
         print(
             f"recall: keychain secrets can't be opened in an app — use: recall secret {key} --copy",
@@ -591,7 +751,12 @@ def onepassword_deeplink(ref: str) -> str | None:
         if account:
             link += f"&a={account}"
         return link
-    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+    except (
+        subprocess.CalledProcessError,
+        json.JSONDecodeError,
+        KeyError,
+        AttributeError,
+    ):
         return None
 
 
@@ -610,12 +775,14 @@ def cmd_open(args, cfg) -> int:
             f"recall: '{args.key}' is a {kind}, not something to open", file=sys.stderr
         )
         return 1
-    value = entry_value(node)
-    if not value:
+    target = runtime_entry_value(node, cfg)
+    if target is None:
         print(f"recall: '{args.key}' has no value to open", file=sys.stderr)
         return 1
-    target = str(Path(str(value)).expanduser()) if kind == "file" else str(value)
-    subprocess.run(["open", target], check=False)
+    result = subprocess.run(["open", target], check=False)
+    if result.returncode != 0:
+        print(f"recall: failed to open '{args.key}'", file=sys.stderr)
+        return 1
     audit("open", args.key)
     return 0
 
@@ -702,31 +869,64 @@ def cmd_json(args, cfg) -> int:
     return 0
 
 
-def cmd_doctor(args, cfg) -> int:
-    problems = 0
-    fp = data_path(cfg)
-    print(f"data file  : {fp}  {'✓' if fp.exists() else '✗ MISSING'}")
-    print(f"config dir : {config_dir()}")
-    print(
-        f"op CLI     : {'✓ ' + (shutil.which('op') or '') if shutil.which('op') else '✗ not installed'}"
-    )
-    if not fp.exists():
-        return 1
+def cmd_format(args, cfg) -> int:
     data = load_data(cfg)
-    n = 0
-    for key, entry in walk_entries(data):
-        n += 1
-        kind = entry_kind(entry)
-        if kind in SECRET_KINDS:
-            if not entry.get("ref"):
-                print(f"  ✗ {key}: secret without 'ref'")
-                problems += 1
-        elif entry.get("value") in (None, ""):
-            print(f"  ✗ {key}: {kind} without 'value'")
-            problems += 1
-        if "tags" in entry and not isinstance(entry.get("tags"), list):
-            print(f"  ✗ {key}: tags must be a list")
-            problems += 1
+    formatted = format_jsonl(flatten_entries(data))
+    if args.check:
+        if data_path(cfg).read_text() != formatted:
+            print(
+                f"recall: data file is not in canonical format: {data_path(cfg)}",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+    sys.stdout.write(formatted)
+    return 0
+
+
+def cmd_doctor(args, cfg) -> int:
+    # `main()` calls doctor with `{}` so it can validate config.json itself.
+    # Tests and library-style callers may pass an explicit config; honor that
+    # instead of reaching back into the user's global recall directory.
+    if cfg:
+        config_error = None
+    else:
+        cfg, config_error = load_config_for_doctor()
+    cfg_path = config_path()
+    if config_error:
+        print(f"config file: {cfg_path}  ✗ INVALID")
+        print(f"  {config_error}")
+    else:
+        status = "✓" if cfg_path.exists() else "✗ MISSING"
+        print(f"config file: {cfg_path}  {status}")
+    fp = data_path(cfg)
+    print(f"config dir : {config_dir()}")
+    if config_error:
+        return 1
+    if not fp.exists():
+        print(f"data file  : {fp}  ✗ MISSING")
+        return 1
+    try:
+        data = load_data(cfg)
+    except SystemExit as exc:
+        print(f"data file  : {fp}  ✗ INVALID")
+        print(f"  {exc}")
+        return 1
+    print(f"data file  : {fp}  ✓")
+    backends = {str(cfg.get("default_backend", "1password"))}
+    for _, entry in walk_entries(data):
+        if entry_kind(entry) in SECRET_KINDS:
+            backends.add(entry_backend(entry, cfg))
+    if backends & {"1password", "op"}:
+        op_path = shutil.which("op")
+        print(f"op CLI     : {'✓ ' + op_path if op_path else '✗ not installed'}")
+    if "keychain" in backends:
+        security_path = shutil.which("security")
+        print(
+            f"security   : {'✓ ' + security_path if security_path else '✗ not installed'}"
+        )
+    n = sum(1 for _ in walk_entries(data))
+    problems = 0
     print(f"entries    : {n} ({problems} problem(s))")
     return 1 if problems else 0
 
@@ -765,6 +965,7 @@ SUBCOMMANDS = {
     "list",
     "tags",
     "json",
+    "format",
     "doctor",
     "export",
     "help",
@@ -830,9 +1031,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="resolve via the vault CLI and copy to clipboard",
     )
-    s.add_argument(
-        "--show", action="store_true", help="resolve and print the value (discouraged)"
-    )
     s.set_defaults(func=cmd_secret)
 
     o = sub.add_parser("open", help="open a url or file entry")
@@ -855,6 +1053,14 @@ def build_parser() -> argparse.ArgumentParser:
     js.add_argument("key", nargs="?", default="")
     js.set_defaults(func=cmd_json)
 
+    fmt = sub.add_parser("format", help="emit the data file in canonical JSONL order")
+    fmt.add_argument(
+        "--check",
+        action="store_true",
+        help="exit non-zero when the data file is not already canonical",
+    )
+    fmt.set_defaults(func=cmd_format)
+
     dr = sub.add_parser("doctor", help="validate the data file and environment")
     dr.set_defaults(func=cmd_doctor)
 
@@ -868,7 +1074,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    cfg = load_config()
     # Bare `recall <key>` → treat as `get <key>` when the first token is not a subcommand.
     if argv and argv[0] not in SUBCOMMANDS and not argv[0].startswith("-"):
         argv = ["get"] + argv
@@ -877,6 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(args, "command", None) or args.command == "help":
         parser.print_help()
         return 0
+    cfg = {} if args.command in {"init", "doctor"} else load_config()
     return args.func(args, cfg)
 
 

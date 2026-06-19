@@ -122,7 +122,7 @@ This format is intentionally boring. The lookup key, kind, value/ref, note, and 
 $ rg -n 'insurance|health|member-id' ~/git/dotfiles/recall/data.jsonl
 ```
 
-Only the one-object-per-line rule matters; whitespace *within* a line is free. The canonical form (what `recall format` emits) is one space after each `:` and `,`, exactly what `json.dumps` produces by default. Minified lines parse identically, but the spaced form is easier to read and hand-edit.
+Only the one-object-per-line rule matters; whitespace *within* a line is free. The canonical form (what `recall format` emits to stdout) is one space after each `:` and `,`, exactly what `json.dumps` produces by default. Minified lines parse identically, but the spaced form is easier to read and hand-edit.
 
 JSONL has no comments. Keep commentary in `note`, in a linked file, or in project docs such as `README.md` or `ROADMAP.md`. That constraint is useful here: the data file stays machine-parseable, line-oriented, and unambiguous.
 
@@ -163,6 +163,8 @@ $ recall email.reply-template --show
 $ recall open email.reply-template
 ```
 
+If a `file` entry uses a relative path, `recall` resolves it relative to the directory containing `data.jsonl`.
+
 `recall <key>` copies the file path. `recall open <key>` opens the file with the system default app.
 
 ---
@@ -176,12 +178,12 @@ $ recall open email.reply-template
 | `recall get <key> [--show]` | same; `--show` prints the value instead of copying |
 | `recall secret <key>` | open the item in 1Password so you copy it by hand |
 | `recall secret <key> --copy` | resolve via `op` and copy to the clipboard (auto-clears) |
-| `recall secret <key> --show` | resolve and print the value (discouraged) |
 | `recall open <key>` | open a `url` or `file` entry |
 | `recall search <query>` | search keys, notes, tags, and non-secret values |
 | `recall list [prefix]` | list entries, optionally under a namespace |
 | `recall tags <tag>` | list entries carrying a tag |
 | `recall json [key]` | dump a subtree as JSON |
+| `recall format [--check]` | emit canonical JSONL, or verify the file is already canonical |
 | `recall export` | alias for `recall json` |
 | `recall doctor` | validate the data file and environment |
 
@@ -216,7 +218,7 @@ There are three ways to interact with a secret, in increasing order of exposure:
 2. **`recall secret github.token`** opens the item in the 1Password app. `recall` does not read the secret value.
 3. **`recall secret github.token --copy`** runs `op read`, copies the value, and clears the clipboard after the configured timeout.
 
-`--show` prints the value to stdout and exists only for debugging. Do not use it where anything is capturing terminal output.
+There is no `recall secret --show` mode. Secret plaintext should not be printed to stdout, where agents, transcripts, shell logs, or terminal capture can read it. For human debugging, use `op read` directly so the unsafe action is explicit and outside `recall`'s normal contract.
 
 Because secret entries already store `op://` references, they also work with 1Password's `op run` and `op inject`. An env file like this:
 
