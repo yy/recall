@@ -1,0 +1,7 @@
+{"key":"orcid.self","kind":"id","value":"0000-0000-0000-0000","note":"My ORCID iD","tags":["identity"]}
+{"key":"orcid.coauthor","kind":"id","value":"0000-0000-0000-0001","note":"A frequent collaborator","tags":["identity"]}
+{"key":"insurance.member-id","kind":"account","value":"MEMBER-ID-EXAMPLE","note":"Health insurance member ID","tags":["health"]}
+{"key":"insurance.portal","kind":"url","value":"https://example.com/login","note":"Claims portal; sign in with the member ID","tags":["health"]}
+{"key":"library-card","kind":"account","value":"LIBRARY-CARD-EXAMPLE","note":"Public library card number","tags":["library"]}
+{"key":"github.token","kind":"secret","backend":"1password","ref":"op://Private/GitHub/token","note":"GitHub personal access token","tags":["dev"]}
+{"key":"openai.api-key","kind":"secret","backend":"1password","ref":"op://Private/OpenAI/api-key","note":"OpenAI API key","tags":["dev"]}

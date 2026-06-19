@@ -8,8 +8,10 @@ build/
 *.egg-info/
 
 # Never commit a real data jar or audit log to this public repo
+data.jsonl
+config.json
 data.yaml
 facts.yaml
 config.yaml
 audit.log
-!examples/data.yaml
+!examples/data.jsonl

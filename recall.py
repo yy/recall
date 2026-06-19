@@ -3,7 +3,7 @@
 Two tiers, by threat model:
 
   * non-secrets (URLs, IDs, account numbers, ORCID, reusable snippets) live in
-    a plain YAML file and are returned directly;
+    a plain JSONL file and are returned directly;
   * secrets (API keys, tokens, passwords) are NEVER stored here — only a
     reference to a vault (e.g. ``op://Private/GitHub/token``) is stored, and the
     value is resolved on demand via ``recall secret``.
@@ -14,16 +14,13 @@ will not resolve a secret: it prints the reference and tells you to use
 allowed ``recall``/``search``/``list`` freely while ``recall secret`` stays
 gated.
 
-Data model (``data.yaml``): one line per dotted key, with an inline YAML map::
+Data model (``data.jsonl``): one JSON object per line, with a ``key`` field::
 
-    orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD"}
-    uva.irb: {kind: url, value: "https://...", note: "Use NetBadge"}
-    github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token"}
-    email.reply-template: {kind: file, value: "~/recall/snippets/reply.md"}
+    {"key":"orcid.self","kind":"id","value":"0000-0000-0000-0000","note":"My ORCID iD"}
+    {"key":"github.token","kind":"secret","backend":"1password","ref":"op://Private/GitHub/token"}
+    {"key":"email.reply-template","kind":"file","value":"~/recall/snippets/reply.md"}
 
-Store multiline content in files and point at them with ``kind: file``. Nested
-YAML mappings are still accepted for compatibility. A mapping with a ``kind:``
-field is an *entry*; one without is a *namespace*.
+Store multiline content in files and point at them with ``kind`` set to ``file``.
 """
 
 from __future__ import annotations
@@ -38,11 +35,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-try:
-    import yaml
-except ImportError:  # pragma: no cover
-    sys.exit("recall: PyYAML is required (pip install pyyaml)")
-
 __version__ = "0.1.0"
 
 SECRET_KINDS = {"secret"}
@@ -54,13 +46,12 @@ DEFAULT_CONFIG = {
     "default_backend": "1password",
 }
 
-STARTER_DATA = """# One dotted key per entry, one entry per line.
-# Non-secret example:
-# orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD", tags: [identity]}
-#
-# Secret example. The value lives in 1Password; recall stores only the reference.
-# github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token", note: "GitHub token", tags: [dev]}
-"""
+STARTER_DATA = (
+    '{"key":"orcid.self","kind":"id","value":"0000-0000-0000-0000",'
+    '"note":"My ORCID iD","tags":["identity"]}\n'
+    '{"key":"github.token","kind":"secret","backend":"1password",'
+    '"ref":"op://Private/GitHub/token","note":"GitHub token","tags":["dev"]}\n'
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -74,42 +65,27 @@ def config_dir() -> Path:
 
 
 def config_path() -> Path:
-    return config_dir() / "config.yaml"
+    return config_dir() / "config.json"
 
 
 def data_path(cfg: dict) -> Path:
-    """Find the data file, with legacy facts-file names kept as fallbacks.
+    """Find the JSONL data file.
 
-    The data file does not have to live in the config dir; config.yaml just
+    The data file does not have to live in the config dir; config.json just
     points at wherever it actually is (e.g. a private dotfiles repo).
     """
     if env := os.environ.get("RECALL_DATA_FILE"):
         return Path(env).expanduser()
-    if env := os.environ.get("RECALL_FILE"):
-        return Path(env).expanduser()
     if cfg.get("data_file"):
         return Path(str(cfg["data_file"])).expanduser()
-    if cfg.get("facts_file"):
-        return Path(str(cfg["facts_file"])).expanduser()
-    preferred = config_dir() / "data.yaml"
-    if preferred.exists():
-        return preferred
-    legacy = config_dir() / "facts.yaml"
-    if legacy.exists():
-        return legacy
-    return preferred
+    return config_dir() / "data.jsonl"
 
 
 def load_config() -> dict:
     path = config_path()
     cfg = dict(DEFAULT_CONFIG)
     if path.exists():
-        try:
-            loaded = yaml.safe_load(path.read_text()) or {}
-        except yaml.YAMLError as exc:
-            sys.exit(f"recall: {path} is not valid YAML: {exc}")
-        if not isinstance(loaded, dict):
-            sys.exit(f"recall: {path} must be a YAML mapping at the top level")
+        loaded = load_json_object_file(path, label="config file")
         cfg.update(loaded)
     return cfg
 
@@ -119,26 +95,72 @@ def load_data(cfg: dict) -> dict:
     if not path.exists():
         sys.exit(
             f"recall: no data file at {path}\n"
-            f"point config.yaml 'data_file' at it, set RECALL_DATA_FILE, or see 'recall doctor'."
+            f"point config.json 'data_file' at it, set RECALL_DATA_FILE, or see 'recall doctor'."
         )
-    data = yaml.safe_load(path.read_text()) or {}
-    if not isinstance(data, dict):
-        sys.exit(f"recall: {path} must be a YAML mapping at the top level")
-    return normalize_data(data, path)
+    entries = load_jsonl_entries(path)
+    return normalize_data(entries, path)
 
 
-def normalize_data(data: dict, path: Path) -> dict:
-    """Convert flat dotted keys to the same tree shape as nested YAML."""
+def load_json_object_file(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        loaded = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        sys.exit(
+            f"recall: invalid JSON in {label} {path} "
+            f"at line {exc.lineno}, column {exc.colno}: {exc.msg}"
+        )
+    if not isinstance(loaded, dict):
+        sys.exit(f"recall: {label} {path} must be a JSON object")
+    return loaded
+
+
+def load_jsonl_entries(path: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            loaded = json.loads(line)
+        except json.JSONDecodeError as exc:
+            sys.exit(
+                f"recall: invalid JSONL in {path} at line {line_number}, "
+                f"column {exc.colno}: {exc.msg}"
+            )
+        if not isinstance(loaded, dict):
+            sys.exit(f"recall: {path}: line {line_number} must be a JSON object")
+        entries.append(loaded)
+    return entries
+
+
+def normalize_data(records: list[dict[str, Any]], path: Path) -> dict:
+    """Convert JSONL records to the internal namespace tree."""
     root: dict[str, Any] = {}
-    for key, node in data.items():
+    for line_number, record in enumerate(records, start=1):
+        key = record.get("key")
         if not isinstance(key, str):
-            sys.exit(f"recall: {path}: top-level keys must be strings")
+            sys.exit(f"recall: {path}: line {line_number} must have string field 'key'")
         parts = key.split(".")
         if any(not part for part in parts):
             sys.exit(f"recall: {path}: invalid empty key segment in '{key}'")
-        insert_entry(root, parts, node, key, path)
+        entry = dict(record)
+        entry.pop("key", None)
+        if not is_entry(entry):
+            sys.exit(
+                f"recall: {path}: line {line_number} entry '{key}' must include "
+                "'kind', 'value', or 'ref'"
+            )
+        insert_entry(root, parts, entry, key, path)
     validate_tree(root, "", path)
     return root
+
+
+def flatten_entries(data: dict) -> list[dict[str, Any]]:
+    records = []
+    for key, entry in sorted(walk_entries(data)):
+        record = {"key": key}
+        record.update(entry)
+        records.append(record)
+    return records
 
 
 def insert_entry(root: dict, parts: list[str], node: Any, key: str, path: Path) -> None:
@@ -193,7 +215,7 @@ def validate_entry(entry: dict, dotted: str, path: Path) -> None:
         if isinstance(value, str) and "\n" in value:
             sys.exit(
                 f"recall: {path}: '{label}' field '{field}' must be one line; "
-                "store multiline content in a file and use kind: file"
+                "store multiline content in a file and use a file entry"
             )
     tags = entry.get("tags")
     if tags is not None and not isinstance(tags, list):
@@ -335,24 +357,27 @@ def write_text_file(path: Path, text: str, force: bool = False) -> bool:
 def build_config_text(
     data_file: str, clipboard_clear_seconds: int, default_backend: str
 ) -> str:
-    return (
-        f"data_file: {data_file}\n"
-        f"clipboard_clear_seconds: {clipboard_clear_seconds}\n"
-        f"default_backend: {default_backend}\n"
-    )
+    return json.dumps(
+        {
+            "data_file": data_file,
+            "clipboard_clear_seconds": clipboard_clear_seconds,
+            "default_backend": default_backend,
+        },
+        indent=2,
+    ) + "\n"
 
 
 # --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
 def cmd_init(args, cfg) -> int:
-    default_data_file = str(config_dir() / "data.yaml")
+    default_data_file = str(config_dir() / "data.jsonl")
     interactive = not args.yes
 
     data_file = args.data_file
     if not data_file and interactive:
         data_file = prompt_value(
-            "Where should recall store data.yaml?", default_data_file
+            "Where should recall store data.jsonl?", default_data_file
         )
     data_file = data_file or default_data_file
 
@@ -733,7 +758,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command")
 
     init = sub.add_parser("init", help="create recall config and data file")
-    init.add_argument("--data-file", help="path to the data.yaml file to use")
+    init.add_argument("--data-file", help="path to the data.jsonl file to use")
     init.add_argument(
         "--clipboard-clear-seconds",
         type=int,
@@ -750,7 +775,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="sample",
         action="store_true",
         default=None,
-        help="create starter comments in a new data file",
+        help="create starter entries in a new data file",
     )
     sample.add_argument(
         "--no-sample",
@@ -766,7 +791,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--force",
         action="store_true",
-        help="overwrite an existing config.yaml",
+        help="overwrite an existing config.json",
     )
     init.set_defaults(func=cmd_init)
 
