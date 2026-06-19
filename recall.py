@@ -16,9 +16,9 @@ gated.
 
 Data model (``data.jsonl``): one JSON object per line, with a ``key`` field::
 
-    {"key":"orcid.self","kind":"id","value":"0000-0000-0000-0000","note":"My ORCID iD"}
-    {"key":"github.token","kind":"secret","backend":"1password","ref":"op://Private/GitHub/token"}
-    {"key":"email.reply-template","kind":"file","value":"~/recall/snippets/reply.md"}
+    {"key": "orcid.self", "kind": "id", "value": "0000-0000-0000-0000", "note": "My ORCID iD"}
+    {"key": "github.token", "kind": "secret", "backend": "1password", "ref": "op://Private/GitHub/token"}
+    {"key": "email.reply-template", "kind": "file", "value": "~/recall/snippets/reply.md"}
 
 Store multiline content in files and point at them with ``kind`` set to ``file``.
 """
@@ -47,10 +47,10 @@ DEFAULT_CONFIG = {
 }
 
 STARTER_DATA = (
-    '{"key":"orcid.self","kind":"id","value":"0000-0000-0000-0000",'
-    '"note":"My ORCID iD","tags":["identity"]}\n'
-    '{"key":"github.token","kind":"secret","backend":"1password",'
-    '"ref":"op://Private/GitHub/token","note":"GitHub token","tags":["dev"]}\n'
+    '{"key": "orcid.self", "kind": "id", "value": "0000-0000-0000-0000", '
+    '"note": "My ORCID iD", "tags": ["identity"]}\n'
+    '{"key": "github.token", "kind": "secret", "backend": "1password", '
+    '"ref": "op://Private/GitHub/token", "note": "GitHub token", "tags": ["dev"]}\n'
 )
 
 
@@ -289,11 +289,14 @@ def to_clipboard(text: str, clear_after: int | None = None) -> None:
             f"current=$(pbpaste); "
             f'if [ "$current" = "$(cat)" ]; then printf "" | pbcopy; fi'
         )
-        subprocess.Popen(
+        proc = subprocess.Popen(
             ["sh", "-c", script],
             stdin=subprocess.PIPE,
             start_new_session=True,
-        ).stdin.write(text.encode())  # type: ignore[union-attr]
+        )
+        if proc.stdin is not None:
+            proc.stdin.write(text.encode())
+            proc.stdin.close()
 
 
 def audit(command: str, key: str) -> None:
@@ -357,14 +360,17 @@ def write_text_file(path: Path, text: str, force: bool = False) -> bool:
 def build_config_text(
     data_file: str, clipboard_clear_seconds: int, default_backend: str
 ) -> str:
-    return json.dumps(
-        {
-            "data_file": data_file,
-            "clipboard_clear_seconds": clipboard_clear_seconds,
-            "default_backend": default_backend,
-        },
-        indent=2,
-    ) + "\n"
+    return (
+        json.dumps(
+            {
+                "data_file": data_file,
+                "clipboard_clear_seconds": clipboard_clear_seconds,
+                "default_backend": default_backend,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 # --------------------------------------------------------------------------- #
