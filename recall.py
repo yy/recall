@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 SECRET_KINDS = {"secret"}
 SUPPORTED_SECRET_BACKENDS = {"1password", "keychain", "op"}
