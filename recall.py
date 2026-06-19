@@ -217,7 +217,9 @@ def cmd_get(args, cfg) -> int:
     if kind in SECRET_KINDS:
         ref = node.get("ref", "(no ref)")
         print(f"{args.key} is a secret → {ref}")
-        print(f"  run: recall secret {args.key}")
+        print(
+            f"  run: recall secret {args.key}   (opens it in 1Password to copy by hand)"
+        )
         return 0
     value = entry_value(node)
     if value is None:
@@ -245,15 +247,91 @@ def cmd_secret(args, cfg) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Default: open the item in the vault app and let the human copy it. The
+    # secret value never passes through recall — the strongest agent boundary.
+    if not (args.copy or args.show):
+        audit("secret-open", args.key)
+        return open_in_vault(node, cfg, args.key)
+
+    # Opt-in: resolve the value via the vault CLI (for scripting / piping).
     value = vault_read(node, cfg)
-    audit("secret", args.key)
+    audit("secret-copy", args.key)
     if args.show:
         print(value)
     else:
-        to_clipboard(value, clear_after=cfg.get("clipboard_clear_seconds", 45))
         secs = cfg.get("clipboard_clear_seconds", 45)
+        to_clipboard(value, clear_after=secs)
         print(f"copied {args.key} to clipboard (clears in {secs}s)")
     return 0
+
+
+def open_in_vault(entry: dict, cfg: dict, key: str) -> int:
+    """Open the entry in its vault app for manual copy (no value touches recall)."""
+    backend = entry.get("backend", cfg.get("default_backend", "1password"))
+    ref = entry.get("ref")
+    if backend in ("1password", "op"):
+        if not ref:
+            print("recall: secret entry has no 'ref'", file=sys.stderr)
+            return 1
+        link = onepassword_deeplink(ref)
+        if link:
+            subprocess.run(["open", link], check=False)
+            print(f"opened {key} in 1Password — copy the secret manually")
+        else:
+            subprocess.run(["open", "onepassword://"], check=False)
+            print(f"opened 1Password — find: {ref}")
+        return 0
+    if backend == "keychain":
+        print(
+            f"recall: keychain secrets can't be opened in an app — use: recall secret {key} --copy",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"recall: don't know how to open backend '{backend}'", file=sys.stderr)
+    return 1
+
+
+def onepassword_deeplink(ref: str) -> str | None:
+    """Build a onepassword://view-item deep link from an op:// reference.
+
+    Resolves vault/item UUIDs via `op`. Returns None if they can't be resolved
+    (caller then just launches the app). Secret field values present in the op
+    response are never read or printed — only the item/vault/account IDs.
+    """
+    body = ref[len("op://") :] if ref.startswith("op://") else ref
+    parts = body.split("/")
+    if len(parts) < 2 or not shutil.which("op"):
+        return None
+    vault, item = parts[0], parts[1]
+    try:
+        meta = json.loads(
+            subprocess.run(
+                ["op", "item", "get", item, "--vault", vault, "--format", "json"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+        item_id = meta.get("id")
+        vault_id = (meta.get("vault") or {}).get("id")
+        who = json.loads(
+            subprocess.run(
+                ["op", "whoami", "--format", "json"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+        account = who.get("account_uuid")
+        if not (item_id and vault_id):
+            return None
+        link = f"onepassword://view-item/?v={vault_id}&i={item_id}"
+        if account:
+            link += f"&a={account}"
+        return link
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+        return None
 
 
 def cmd_open(args, cfg) -> int:
@@ -414,9 +492,18 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--show", action="store_true", help="print value instead of copying")
     g.set_defaults(func=cmd_get)
 
-    s = sub.add_parser("secret", help="resolve a secret reference via the vault")
+    s = sub.add_parser(
+        "secret", help="open a secret in 1Password (or --copy to clipboard)"
+    )
     s.add_argument("key")
-    s.add_argument("--show", action="store_true", help="print value instead of copying")
+    s.add_argument(
+        "--copy",
+        action="store_true",
+        help="resolve via the vault CLI and copy to clipboard",
+    )
+    s.add_argument(
+        "--show", action="store_true", help="resolve and print the value (discouraged)"
+    )
     s.set_defaults(func=cmd_secret)
 
     o = sub.add_parser("open", help="open a url entry in the browser")
