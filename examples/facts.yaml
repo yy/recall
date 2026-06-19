@@ -1,0 +1,37 @@
+# Example recall facts file. Copy somewhere private and point config.yaml at it.
+#
+# A mapping with a `kind:` field is an entry; one without is a namespace.
+
+orcid:
+  kind: id
+  value: "0000-0002-1825-0097"
+  note: ORCID iD
+
+uva:
+  irb:
+    kind: url
+    value: https://example.edu/irb
+    note: Use NetBadge to log in
+    tags: [research, compliance]
+  computing-id:
+    kind: id
+    value: abc1de
+
+grants:
+  nsf:
+    institution-id:
+      kind: account
+      value: "0001234567"
+      note: NSF institution ID for the PIMS portal
+
+# Secrets store only a reference — the value lives in your vault.
+github:
+  kind: secret
+  backend: 1password
+  ref: op://Private/GitHub/token
+  note: GitHub personal access token
+
+openai:
+  kind: secret
+  backend: 1password
+  ref: op://Private/OpenAI/api-key

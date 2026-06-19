@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Never commit a real data jar or audit log to this public repo
+facts.yaml
+config.yaml
+audit.log
+!examples/facts.yaml
