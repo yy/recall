@@ -1,25 +1,25 @@
 # recall
 
-A small CLI **data jar** for the facts you fetch over and over — URLs, IDs,
-account numbers, ORCID, reusable snippets — plus *references* to the secrets you
-keep in a real vault.
+A small CLI **data jar**[^datajar] for lookup data you fetch over and over—URLs, IDs, account numbers, an ORCID, reusable snippets—plus *references* to the secrets you keep in a real vault.
 
-You stop digging through email, password managers, and old notes for the same
-account number or portal URL. You (or an agent working for you) just ask:
+You stop digging through email, password managers, and old notes for the same account number or portal URL. You (or an agent working for you) just ask:
 
 ```console
-$ recall orcid
-copied orcid (id) to clipboard
+$ recall orcid.self
+copied orcid.self (id) to clipboard
 
-$ recall uva.irb
-copied uva.irb (url) to clipboard
+$ recall orcid.coauthor
+copied orcid.coauthor (id) to clipboard
 
-$ recall search grant
-  grants.nsf.institution-id  [account]  — NSF institution ID for the PIMS portal
+$ recall insurance.portal
+copied insurance.portal (url) to clipboard
 
-$ recall github
-github is a secret → op://Private/GitHub/token
-  run: recall secret github   (opens it in 1Password to copy by hand)
+$ recall search card
+  library-card  [account]  — Public library card number
+
+$ recall github.token
+github.token is a secret → op://Private/GitHub/token
+  run: recall secret github.token   (opens it in 1Password to copy by hand)
 ```
 
 ---
@@ -29,7 +29,8 @@ github is a secret → op://Private/GitHub/token
 - [Philosophy: two tiers by threat model](#philosophy-two-tiers-by-threat-model)
 - [Install](#install)
 - [Quickstart](#quickstart)
-- [The facts file](#the-facts-file)
+- [The data file](#the-data-file)
+- [Multiline values and notes](#multiline-values-and-notes)
 - [Commands](#commands)
 - [How secrets work](#how-secrets-work)
 - [Configuration](#configuration)
@@ -43,21 +44,16 @@ github is a secret → op://Private/GitHub/token
 
 ## Philosophy: two tiers by threat model
 
-Most "things I look up repeatedly" are not secrets. Your ORCID, an IRB portal
-URL, a grant institution ID, your library card number — leaking them is not a
-breach, and encrypting them behind a master password is friction with no payoff.
-A few things *are* secrets: API keys, tokens, passwords.
+Most of what you look up repeatedly isn't secret: an ORCID, a health-insurance member ID, a portal URL you hit twice a year, a library card number. Leaking these isn't a breach, and locking them behind a master password is friction with no payoff. A few items genuinely are secret: API keys, tokens, passwords.
 
-`recall` splits data by **threat model, not by tool**:
+`recall` splits data into two tiers, secrets and non-secrets:
 
 | Tier | Examples | Where the value lives |
 |---|---|---|
 | **non-secret** | URLs, IDs, account numbers, ORCID, snippets | in `recall`'s plain YAML file, returned directly |
 | **secret** | API keys, tokens, passwords | **only a reference** is stored; the value lives in 1Password and `recall` never reads it |
 
-This split is the entire design. It is what lets you keep the fact file in a
-(private) git repo without fear, and what lets an agent use `recall` freely
-without ever being in a position to exfiltrate a credential.
+That split is the whole design. It lets you keep the data file in a private git repo without worry, and lets an agent use `recall` freely without ever being able to exfiltrate a credential.
 
 ---
 
@@ -67,79 +63,69 @@ without ever being in a position to exfiltrate a credential.
 uv tool install recaller      # PyPI distribution is `recaller`; the command is `recall`
 ```
 
-For the secret tier you also need the
-[1Password CLI](https://developer.1password.com/docs/cli/) with desktop-app
-integration turned on:
+For the secret tier you also need the [1Password CLI](https://developer.1password.com/docs/cli/) with desktop-app integration turned on:
 
 1. `brew install 1password-cli`
-2. In 1Password: **Settings → Developer → Integrate with 1Password CLI** (this is
-   what lets `op` unlock with Touch ID instead of a typed master password).
+2. In 1Password: **Settings → Developer → Integrate with 1Password CLI** (this is what lets `op` unlock with Touch ID instead of a typed master password).
 
-`recall` is macOS-first today (it uses `pbcopy` for the clipboard and `open` for
-URLs and 1Password deep links).
+`recall` is macOS-first today: it uses `pbcopy` for the clipboard and `open` for URLs and 1Password deep links.
 
 ---
 
 ## Quickstart
 
-1. **Create a facts file** anywhere you like (a private repo is ideal):
+1. **Create a data file** anywhere you like (a private repo is ideal):
 
    ```yaml
-   # ~/git/dotfiles/recall/facts.yaml
-   orcid:
-     kind: id
-     value: "0000-0002-1825-0097"
+   # e.g., ~/git/dotfiles/recall/data.yaml
+   orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD"}
    ```
 
 2. **Point `recall` at it** via `~/.config/recall/config.yaml`:
 
    ```yaml
-   facts_file: ~/git/dotfiles/recall/facts.yaml
+   data_file: ~/git/dotfiles/recall/data.yaml
    ```
 
 3. **Use it:**
 
    ```console
-   $ recall orcid
-   copied orcid (id) to clipboard
+   $ recall orcid.self
+   copied orcid.self (id) to clipboard
    $ recall doctor          # sanity-check file + environment
    ```
 
 ---
 
-## The facts file
+## The data file
 
-A single YAML file. The shape is deliberately simple:
+The recommended data file is a flat YAML mapping: one dotted key per entry, one entry per line. This keeps the file easy for humans and agents to scan with `rg`, while still giving `recall` a real parser instead of a pile of shell parsing rules.
 
 ```yaml
-orcid:
-  kind: id
-  value: "0000-0002-1825-0097"
-  note: ORCID iD
+orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD", tags: [identity]}
+orcid.coauthor: {kind: id, value: "0000-0000-0000-0000", note: "A frequent collaborator", tags: [identity]}
 
-uva:                         # a namespace — no `kind:` field
-  irb:
-    kind: url
-    value: https://example.edu/irb
-    note: Use NetBadge
-    tags: [research, compliance]
-  computing-id:
-    kind: id
-    value: abc1de
+insurance.member-id: {kind: account, value: "XJ4920516", note: "Health insurance member ID", tags: [health]}
+insurance.portal: {kind: url, value: "https://example.com/login", note: "Claims portal; sign in with the member ID", tags: [health]}
 
-github:
-  kind: secret               # the value is NOT here — only a reference
-  backend: 1password
-  ref: op://Private/GitHub/token
-  note: GitHub personal access token
+library-card: {kind: account, value: "21234567890", note: "Public library card number", tags: [library]}
+
+github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token", note: "GitHub personal access token", tags: [dev]}
 ```
 
-**Entries vs namespaces.** A mapping with a `kind:` field is an **entry** (a
-thing you can fetch). A mapping without one is a **namespace** that groups
-entries. So `uva` is a namespace and `uva.irb` is an entry.
+This is still YAML, but it uses YAML's inline mapping form. The first token on each line is the canonical lookup key; the rest of the line contains all grep-relevant metadata. For example:
 
-**Dotted paths** address the tree: `recall uva.irb`, `recall list uva`,
-`recall json uva`.
+```console
+$ rg -n 'insurance|health|member-id' ~/git/dotfiles/recall/data.yaml
+```
+
+That property is the main reason to prefer flat YAML over nested YAML here. In nested YAML, the key, kind, value, note, and tags are spread across different lines, so a simple grep result often lacks enough context for an agent to act on confidently.
+
+**Keys and namespaces.** Dots create virtual namespaces. `insurance.member-id` and `insurance.portal` are entries; `insurance` is a namespace inferred from those prefixes. Use short lowercase keys with dots between namespaces and hyphens inside a segment: `service.account-id`, `person.orcid`, `grant.nsf.institution-id`.
+
+**Dotted paths** address the tree: `recall insurance.portal`, `recall list insurance`, `recall json insurance`.
+
+Nested YAML is still accepted for compatibility. Internally, `recall` normalizes flat dotted keys and nested YAML to the same tree.
 
 **Fields:**
 
@@ -151,6 +137,46 @@ entries. So `uva` is a namespace and `uva.irb` is an entry.
 | `ref` | secret entries | a vault reference, e.g. `op://Private/GitHub/token` |
 | `note` | optional | shown in `search` / `list`; never affects the value |
 | `tags` | optional | list of strings for `recall tags` |
+
+---
+
+## Multiline values and notes
+
+Keep ordinary entries on one line. For short snippets with meaningful line breaks, escape the newline characters:
+
+```yaml
+email.signature: {kind: snippet, value: "Best,\nYY\n", note: "Email signature", tags: [email]}
+```
+
+For longer snippets, use block YAML for that one entry:
+
+```yaml
+email.signature:
+  kind: snippet
+  note: "Email signature"
+  tags: [email]
+  value: |
+    Best,
+    YY
+```
+
+For long notes, keep a short searchable `note` if possible and move extra context into the value, tags, or an external file. If the note itself really needs multiple lines, `recall search`, `recall list`, and `recall tags` collapse it to one display line:
+
+```yaml
+insurance.portal:
+  kind: url
+  value: "https://example.com/login"
+  tags: [health]
+  note: >
+    Claims portal. Sign in with the member ID.
+    Used for reimbursement forms and EOB lookup.
+```
+
+For large reusable text, prefer a file reference:
+
+```yaml
+email.reply-template: {kind: file, value: "~/git/dotfiles/recall/snippets/reply.md", note: "Standard email reply template", tags: [email]}
+```
 
 ---
 
@@ -168,74 +194,71 @@ entries. So `uva` is a namespace and `uva.irb` is an entry.
 | `recall list [prefix]` | list entries, optionally under a namespace |
 | `recall tags <tag>` | list entries carrying a tag |
 | `recall json [key]` | dump a subtree as JSON |
-| `recall doctor` | validate the facts file and environment |
+| `recall doctor` | validate the data file and environment |
 
 Asking for a **namespace** instead of an entry lists its children:
 
 ```console
-$ recall uva
-uva/  (namespace)
-  uva.computing-id  [id]
-  uva.irb  [url]
+$ recall insurance
+insurance/  (namespace)
+  insurance.member-id  [account]  — Health insurance member ID
+  insurance.portal  [url]  — Claims portal; sign in with the member ID
 ```
 
 ---
 
 ## How secrets work
 
-Secrets are the interesting part. `recall` is built so that **the plaintext of a
-secret never passes through it**.
+Secrets are the interesting part. `recall` is built so that **the plaintext of a secret never passes through it**.
 
 A secret entry stores only a reference:
 
 ```yaml
-github:
-  kind: secret
-  backend: 1password
-  ref: op://Private/GitHub/token
+github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token"}
 ```
 
 There are three ways to interact with it, in increasing order of exposure:
 
-1. **`recall github`** (bare get) — refuses to resolve. It prints the reference
-   and a hint. Nothing sensitive happens. This is safe for anyone, including an
-   agent, to run.
+1. **`recall github.token`** (bare get) refuses to resolve. It prints the reference and a hint; nothing sensitive happens. Safe for anyone, including an agent, to run.
 
    ```console
-   $ recall github
-   github is a secret → op://Private/GitHub/token
-     run: recall secret github   (opens it in 1Password to copy by hand)
+   $ recall github.token
+   github.token is a secret → op://Private/GitHub/token
+     run: recall secret github.token   (opens it in 1Password to copy by hand)
    ```
 
-2. **`recall secret github`** (the default) — opens the item in the **1Password
-   app** via a deep link and tells you to copy it manually. `recall` resolves the
-   vault/item IDs to build the link but never reads the secret value. This is the
-   recommended path: the credential goes from 1Password to your clipboard by your
-   own hand, with `recall` (and any agent) entirely out of the loop.
+2. **`recall secret github.token`** (the default) opens the item in the **1Password app** via a deep link and tells you to copy it manually. `recall` resolves the vault and item IDs to build the link but never reads the secret value. This is the recommended path: the credential goes from 1Password to your clipboard by your own hand, with `recall` (and any agent) out of the loop.
 
    ```console
-   $ recall secret github
-   opened github in 1Password — copy the secret manually
+   $ recall secret github.token
+   opened github.token in 1Password — copy the secret manually
    ```
 
-3. **`recall secret github --copy`** (opt-in) — for scripting. This *does* run
-   `op read` and place the value on the clipboard, clearing it after a timeout.
-   Use it when you genuinely need the value piped somewhere; avoid it in any
-   context an agent can drive.
+3. **`recall secret github.token --copy`** (opt-in) is for scripting. It *does* run `op read` and place the value on the clipboard, clearing it after a timeout. Use it when you genuinely need the value piped somewhere; avoid it in any context an agent can drive.
 
-`--show` prints the value to stdout and exists only for debugging. Don't use it
-where anything is capturing your terminal.
+`--show` prints the value to stdout and exists only for debugging. Don't use it where anything is capturing your terminal.
+
+### Working with `op run`
+
+Because secret entries already store `op://` references, they slot straight into 1Password's [`op run`](https://developer.1password.com/docs/cli/reference/commands/run/) and `op inject`. A `recall` `ref` is exactly the string those commands expect, so an env file like
+
+```dotenv
+GITHUB_TOKEN=op://Private/GitHub/token
+```
+
+resolves at launch with `op run --env-file=.env -- your-command`. `recall` stays the interactive path (open in the app, or `--copy` one value); `op run` covers bulk, non-interactive injection. Keep `op run` to non-agent contexts, though: it places resolved secrets in the child process's environment, where an agent driving that process could read them.
+
+Right now `recall` supports **1Password only** as a secret backend. (A `keychain` backend exists for `--copy`, but the app deep link and `op run` are 1Password-specific.)
 
 ---
 
 ## Configuration
 
-`recall` reads `~/.config/recall/config.yaml` (override the directory with
-`$XDG_CONFIG_HOME` or `$RECALL_DIR`):
+`recall` reads `~/.config/recall/config.yaml` (override the directory with `$XDG_CONFIG_HOME` or `$RECALL_DIR`):
 
 ```yaml
-# Where the facts file actually lives. It does NOT have to be in the config dir.
-facts_file: ~/git/dotfiles/recall/facts.yaml
+# Where the data file actually lives. It does NOT have to be in the config dir.
+data_file: ~/git/dotfiles/recall/data.yaml
 
 # Seconds before a secret put on the clipboard by `--copy` is cleared.
 clipboard_clear_seconds: 45
@@ -244,26 +267,19 @@ clipboard_clear_seconds: 45
 default_backend: 1password
 ```
 
-**Facts-file resolution order:** `$RECALL_FILE` → `config.yaml`'s `facts_file`
-→ `~/.config/recall/facts.yaml`.
+**Data-file resolution order:** `$RECALL_DATA_FILE` → `$RECALL_FILE` → `config.yaml`'s `data_file` → legacy `facts_file` → `~/.config/recall/data.yaml` → legacy `~/.config/recall/facts.yaml`.
 
-A natural setup is: the **tool** is public (this repo, installable from PyPI),
-while your **data** is a `facts.yaml` in a *private* repo (e.g. your dotfiles),
-pointed at by `config.yaml`. The public code hardcodes nothing personal.
+A natural setup: the **tool** is public (this repo, installable from PyPI) while your **data** is a `data.yaml` in a private repo, e.g. your dotfiles, pointed at by `config.yaml`. The public code hardcodes nothing personal.
 
 ---
 
 ## Using recall with agents
 
-This is the use case `recall` was built for. Give your coding agent one
-instruction:
+This is the use case `recall` was built for. Give your coding agent one instruction:
 
-> If you need a URL, account number, identifier, or credential *reference*, use
-> `recall`. Find keys with `recall search <term>` or `recall list`. Never ask me
-> to paste a secret — values go to the clipboard or open in 1Password.
+> If you need a URL, account number, identifier, or credential *reference*, use `recall`. Find keys with `recall search <term>` or `recall list`. Never ask me to paste a secret; values go to the clipboard or open in 1Password.
 
-Then enforce the boundary in your harness instead of trusting prose. For
-**Claude Code** (`~/.claude/settings.json`):
+Then enforce the boundary in your harness instead of trusting prose. For **Claude Code** (`~/.claude/settings.json`):
 
 ```jsonc
 {
@@ -274,10 +290,7 @@ Then enforce the boundary in your harness instead of trusting prose. For
 }
 ```
 
-With this, an agent can look up any non-secret fact unattended, but the moment it
-tries `recall secret …` the harness stops it. (If you don't run in
-`bypassPermissions` mode, you can use `"ask"` instead of `"deny"` to get a prompt
-rather than a hard block.)
+With this, an agent can look up any non-secret data unattended, but the moment it tries `recall secret …` the harness stops it. (If you don't run in `bypassPermissions` mode, use `"ask"` instead of `"deny"` for a prompt rather than a hard block.)
 
 ---
 
@@ -295,44 +308,26 @@ What touches a secret's plaintext, and what doesn't:
 
 Other properties:
 
-- The fact file is plain text by design, so keep it in a **private** repo.
-  Filenames/keys are visible to anyone with repo access — don't encode anything
-  sensitive in a *key name*.
-- `recall` writes an access log to `~/.config/recall/audit.log` (`recall get`,
-  `secret-open`, `secret-copy`, …). Review it with `tail`.
-- The `.gitignore` in this repo refuses to commit a real `facts.yaml`,
-  `config.yaml`, or `audit.log`, so you can't leak your jar by publishing the
-  tool.
+- The data file is plain text by design, so keep it in a **private** repo. Filenames and keys are visible to anyone with repo access; don't encode anything sensitive in a *key name*.
+- `recall` logs every access to `~/.config/recall/audit.log` (`get`, `secret-open`, `secret-copy`, …). Review it with `tail`.
+- The repo's `.gitignore` refuses to commit a real `data.yaml`, legacy `facts.yaml`, `config.yaml`, or `audit.log`, so publishing the tool can't leak your jar.
 
 ---
 
 ## Why not just …
 
-- **`pass`?** Elegant, but it's a password-store abstraction: GPG per entry, a
-  flat-ish tree, and clumsy rich metadata. `recall` keeps non-secrets in one
-  readable YAML with notes/tags/kinds, and delegates *actual* secrets to a real
-  vault rather than reinventing one.
-- **Apple Passwords?** No scriptable read path — an agent can't fetch from it. It
-  is the right home for login autofill, not for an agent-driven data jar.
-- **A plain text file + `grep`?** That's most of `recall` for non-secrets — but
-  you lose the secret tier, the clipboard ergonomics, the `op://` indirection,
-  and the clean agent boundary.
+- **`pass`?** Elegant, but it's a password-store abstraction: GPG per entry, a flattish tree, clumsy rich metadata. `recall` keeps non-secrets in one grep-friendly YAML file with notes, tags, and kinds, and delegates *actual* secrets to a real vault instead of reinventing one.
+- **Apple Passwords?** No scriptable read path, so an agent can't fetch from it. It's the right home for login autofill, not for an agent-driven data jar.
+- **A plain text file plus `grep`?** That's most of `recall` for non-secrets, which is why the recommended format is one entry per line. The CLI adds structured validation, clipboard ergonomics, `op://` indirection, and the clean agent boundary.
 
 ---
 
 ## Troubleshooting
 
-- **`no facts file at …`** — create the file and point `config.yaml`'s
-  `facts_file` at it, or set `$RECALL_FILE`. Run `recall doctor`.
-- **`op read failed` / `op not found`** — install the 1Password CLI and enable
-  the desktop-app integration (see [Install](#install)).
-- **`recall secret` opens 1Password but not the right item** — `recall` falls
-  back to just launching the app when it can't resolve the item's UUID (e.g. the
-  `ref` vault/item name doesn't match). Check the `ref` against
-  `op item get "<item>" --vault "<vault>"`.
-- **Clipboard didn't clear** — a clipboard-history manager (Raycast, Maccy,
-  Paste) can retain a copy even after `recall` clears the system clipboard.
-  Exclude `recall` or pause history when using `--copy`.
+- **`no data file at …`**: create the file and point `config.yaml`'s `data_file` at it, or set `$RECALL_DATA_FILE`, then run `recall doctor`.
+- **`op read failed` / `op not found`**: install the 1Password CLI and enable the desktop-app integration (see [Install](#install)).
+- **`recall secret` opens 1Password but not the right item**: `recall` falls back to launching the app when it can't resolve the item's UUID (e.g. the `ref`'s vault or item name doesn't match). Check the `ref` against `op item get "<item>" --vault "<vault>"`.
+- **Clipboard didn't clear**: a clipboard-history manager (Raycast, Maccy, Paste) can keep a copy even after `recall` clears the system clipboard. Exclude `recall` or pause history when using `--copy`.
 
 ---
 
@@ -344,10 +339,10 @@ uv tool install --editable . --force    # `recall` now tracks your source edits
 uv run --with pyyaml recall.py doctor   # or run straight from source
 ```
 
-The whole thing is one file (`recall.py`, ~350 lines) with a single runtime
-dependency (PyYAML). The core lookup is a plain function, so a future MCP server
-or other front-end can wrap it without going through the CLI.
+The whole thing is one file (`recall.py`, ~550 lines) with a single runtime dependency, PyYAML. The core lookup is a plain function, so a future MCP server or other front-end can wrap it without going through the CLI.
 
 ## License
 
 MIT
+
+[^datajar]: The idea is inspired by [Data Jar](https://datajar.app/).

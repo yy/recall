@@ -1,0 +1,15 @@
+# Example recall data file. Copy somewhere private and point config.yaml at it.
+#
+# One dotted key per entry, one entry per line. This keeps grep results useful.
+
+orcid.self: {kind: id, value: "0000-0002-1825-0097", note: "My ORCID iD", tags: [identity]}
+orcid.coauthor: {kind: id, value: "0000-0001-5109-3700", note: "A frequent collaborator", tags: [identity]}
+
+insurance.member-id: {kind: account, value: "XJ4920516", note: "Health insurance member ID", tags: [health]}
+insurance.portal: {kind: url, value: "https://example.com/login", note: "Claims portal; sign in with the member ID", tags: [health]}
+
+library-card: {kind: account, value: "21234567890", note: "Public library card number", tags: [library]}
+
+# Secrets store only a reference — the value lives in your vault.
+github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token", note: "GitHub personal access token", tags: [dev]}
+openai.api-key: {kind: secret, backend: 1password, ref: "op://Private/OpenAI/api-key", note: "OpenAI API key", tags: [dev]}

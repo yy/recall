@@ -1,12 +1,12 @@
 [project]
 name = "recaller"
 version = "0.1.0"
-description = "A small CLI data jar for the facts you fetch over and over — URLs, IDs, account numbers, and vault-backed secret references."
+description = "A grep-friendly CLI data jar for URLs, IDs, account numbers, snippets, and vault-backed secret references."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "YY Ahn" }]
-keywords = ["cli", "secrets", "1password", "yaml", "knowledge", "clipboard"]
+keywords = ["cli", "secrets", "1password", "yaml", "grep", "knowledge", "clipboard"]
 classifiers = [
     "Environment :: Console",
     "Programming Language :: Python :: 3",

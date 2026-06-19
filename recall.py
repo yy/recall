@@ -1,4 +1,4 @@
-"""recall — a small CLI "data jar" for the facts you fetch over and over.
+"""recall — a small CLI "data jar" for lookup data you fetch over and over.
 
 Two tiers, by threat model:
 
@@ -14,22 +14,14 @@ will not resolve a secret: it prints the reference and tells you to use
 allowed ``recall``/``search``/``list`` freely while ``recall secret`` stays
 gated.
 
-Data model (``facts.yaml``)::
+Data model (``data.yaml``): one line per dotted key, with an inline YAML map::
 
-    orcid:
-      kind: id
-      value: "0000-0000-0000-0000"
-    uva:
-      irb:
-        kind: url
-        value: https://...
-        note: Use NetBadge
-    github:
-      kind: secret
-      backend: 1password
-      ref: op://Private/GitHub/token
+    orcid.self: {kind: id, value: "0000-0000-0000-0000", note: "My ORCID iD"}
+    uva.irb: {kind: url, value: "https://...", note: "Use NetBadge"}
+    github.token: {kind: secret, backend: 1password, ref: "op://Private/GitHub/token"}
 
-A mapping with a ``kind:`` field is an *entry*; one without is a *namespace*.
+Nested YAML mappings are still accepted for compatibility. A mapping with a
+``kind:`` field is an *entry*; one without is a *namespace*.
 """
 
 from __future__ import annotations
@@ -71,17 +63,27 @@ def config_dir() -> Path:
     return Path(base).expanduser() / "recall"
 
 
-def facts_path(cfg: dict) -> Path:
-    """Resolution order: $RECALL_FILE > config.yaml 'facts_file' > config dir default.
+def data_path(cfg: dict) -> Path:
+    """Find the data file, with legacy facts-file names kept as fallbacks.
 
-    The facts file does not have to live in the config dir — config.yaml just
+    The data file does not have to live in the config dir; config.yaml just
     points at wherever it actually is (e.g. a private dotfiles repo).
     """
+    if env := os.environ.get("RECALL_DATA_FILE"):
+        return Path(env).expanduser()
     if env := os.environ.get("RECALL_FILE"):
         return Path(env).expanduser()
+    if cfg.get("data_file"):
+        return Path(str(cfg["data_file"])).expanduser()
     if cfg.get("facts_file"):
         return Path(str(cfg["facts_file"])).expanduser()
-    return config_dir() / "facts.yaml"
+    preferred = config_dir() / "data.yaml"
+    if preferred.exists():
+        return preferred
+    legacy = config_dir() / "facts.yaml"
+    if legacy.exists():
+        return legacy
+    return preferred
 
 
 def load_config() -> dict:
@@ -93,17 +95,76 @@ def load_config() -> dict:
     return cfg
 
 
-def load_facts(cfg: dict) -> dict:
-    path = facts_path(cfg)
+def load_data(cfg: dict) -> dict:
+    path = data_path(cfg)
     if not path.exists():
         sys.exit(
-            f"recall: no facts file at {path}\n"
-            f"point config.yaml 'facts_file' at it, set RECALL_FILE, or see 'recall doctor'."
+            f"recall: no data file at {path}\n"
+            f"point config.yaml 'data_file' at it, set RECALL_DATA_FILE, or see 'recall doctor'."
         )
     data = yaml.safe_load(path.read_text()) or {}
     if not isinstance(data, dict):
         sys.exit(f"recall: {path} must be a YAML mapping at the top level")
-    return data
+    normalized = normalize_data(data, path)
+    validate_tree(normalized, "", path)
+    return normalized
+
+
+def normalize_data(data: dict, path: Path) -> dict:
+    """Convert flat dotted keys to the same tree shape as nested YAML."""
+    root: dict[str, Any] = {}
+    for key, node in data.items():
+        if not isinstance(key, str):
+            sys.exit(f"recall: {path}: top-level keys must be strings")
+        parts = key.split(".")
+        if any(not part for part in parts):
+            sys.exit(f"recall: {path}: invalid empty key segment in '{key}'")
+        insert_entry(root, parts, node, key, path)
+    return root
+
+
+def insert_entry(root: dict, parts: list[str], node: Any, key: str, path: Path) -> None:
+    cursor = root
+    for part in parts[:-1]:
+        existing = cursor.setdefault(part, {})
+        if is_entry(existing) or not isinstance(existing, dict):
+            sys.exit(f"recall: {path}: '{key}' conflicts with entry '{part}'")
+        cursor = existing
+    leaf = parts[-1]
+    if leaf in cursor:
+        cursor[leaf] = merge_nodes(cursor[leaf], node, key, path)
+    else:
+        cursor[leaf] = node
+
+
+def merge_nodes(existing: Any, incoming: Any, key: str, path: Path) -> Any:
+    if not (
+        isinstance(existing, dict)
+        and isinstance(incoming, dict)
+        and not is_entry(existing)
+        and not is_entry(incoming)
+    ):
+        sys.exit(f"recall: {path}: duplicate or conflicting entry for '{key}'")
+    merged = dict(existing)
+    for child_key, child_node in incoming.items():
+        if child_key in merged:
+            merged[child_key] = merge_nodes(merged[child_key], child_node, key, path)
+        else:
+            merged[child_key] = child_node
+    return merged
+
+
+def validate_tree(node: Any, dotted: str, path: Path) -> None:
+    if is_entry(node):
+        return
+    if not isinstance(node, dict):
+        label = dotted or "<root>"
+        sys.exit(
+            f"recall: {path}: '{label}' is neither an entry mapping nor a namespace"
+        )
+    for key, child in node.items():
+        child_path = f"{dotted}.{key}" if dotted else str(key)
+        validate_tree(child, child_path, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -142,6 +203,17 @@ def entry_kind(entry: dict) -> str:
     if "kind" in entry:
         return entry["kind"]
     return "secret" if "ref" in entry else "value"
+
+
+def entry_tags(entry: dict) -> list[str]:
+    tags = entry.get("tags") or []
+    if isinstance(tags, list):
+        return [str(tag) for tag in tags]
+    return [str(tags)]
+
+
+def one_line(text: Any) -> str:
+    return " ".join(str(text).split())
 
 
 # --------------------------------------------------------------------------- #
@@ -203,7 +275,7 @@ def vault_read(entry: dict, cfg: dict) -> str:
 # Commands
 # --------------------------------------------------------------------------- #
 def cmd_get(args, cfg) -> int:
-    data = load_facts(cfg)
+    data = load_data(cfg)
     node = resolve(data, args.key)
     if node is None:
         print(f"recall: no such key '{args.key}'", file=sys.stderr)
@@ -236,7 +308,7 @@ def cmd_get(args, cfg) -> int:
 
 
 def cmd_secret(args, cfg) -> int:
-    data = load_facts(cfg)
+    data = load_data(cfg)
     node = resolve(data, args.key)
     if node is None or not is_entry(node):
         print(f"recall: no such secret '{args.key}'", file=sys.stderr)
@@ -335,7 +407,7 @@ def onepassword_deeplink(ref: str) -> str | None:
 
 
 def cmd_open(args, cfg) -> int:
-    data = load_facts(cfg)
+    data = load_data(cfg)
     node = resolve(data, args.key)
     if not is_entry(node):
         print(f"recall: no such entry '{args.key}'", file=sys.stderr)
@@ -353,12 +425,12 @@ def cmd_open(args, cfg) -> int:
 
 
 def cmd_search(args, cfg) -> int:
-    data = load_facts(cfg)
+    data = load_data(cfg)
     q = args.query.lower()
     hits = []
     for key, entry in walk_entries(data):
-        note = str(entry.get("note", ""))
-        tags = " ".join(entry.get("tags", []) or [])
+        note = one_line(entry.get("note", ""))
+        tags = " ".join(entry_tags(entry))
         kind = entry_kind(entry)
         # Match on key/note/tags. Match non-secret values too, but never print them.
         haystack = f"{key} {note} {tags}".lower()
@@ -378,7 +450,7 @@ def cmd_search(args, cfg) -> int:
 
 
 def cmd_list(args, cfg) -> int:
-    data = load_facts(cfg)
+    data = load_data(cfg)
     root = data
     if args.prefix:
         root = resolve(data, args.prefix)
@@ -386,24 +458,38 @@ def cmd_list(args, cfg) -> int:
             print(f"recall: no such namespace '{args.prefix}'", file=sys.stderr)
             return 1
         if is_entry(root):
-            _print_children(args.prefix, {})
+            kind = entry_kind(root)
+            marker = "🔒" if kind in SECRET_KINDS else "  "
+            line = f"{marker} {args.prefix}  [{kind}]"
+            note = one_line(root.get("note", ""))
+            if note:
+                line += f"  — {note}"
+            print(line)
             return 0
     for key, entry in sorted(walk_entries(root, args.prefix or "")):
         kind = entry_kind(entry)
         marker = "🔒" if kind in SECRET_KINDS else "  "
-        print(f"{marker} {key}  [{kind}]")
+        line = f"{marker} {key}  [{kind}]"
+        note = one_line(entry.get("note", ""))
+        if note:
+            line += f"  — {note}"
+        print(line)
     return 0
 
 
 def cmd_tags(args, cfg) -> int:
-    data = load_facts(cfg)
+    data = load_data(cfg)
     want = args.tag.lower()
     found = False
     for key, entry in sorted(walk_entries(data)):
-        tags = [str(t).lower() for t in (entry.get("tags") or [])]
+        tags = [tag.lower() for tag in entry_tags(entry)]
         if want in tags:
             found = True
-            print(f"  {key}  [{entry_kind(entry)}]")
+            line = f"  {key}  [{entry_kind(entry)}]"
+            note = one_line(entry.get("note", ""))
+            if note:
+                line += f"  — {note}"
+            print(line)
     if not found:
         print(f"recall: no entries tagged '{args.tag}'")
         return 1
@@ -411,7 +497,7 @@ def cmd_tags(args, cfg) -> int:
 
 
 def cmd_json(args, cfg) -> int:
-    data = load_facts(cfg)
+    data = load_data(cfg)
     node = data if not args.key else resolve(data, args.key)
     if node is None:
         print(f"recall: no such key '{args.key}'", file=sys.stderr)
@@ -422,15 +508,15 @@ def cmd_json(args, cfg) -> int:
 
 def cmd_doctor(args, cfg) -> int:
     problems = 0
-    fp = facts_path(cfg)
-    print(f"facts file : {fp}  {'✓' if fp.exists() else '✗ MISSING'}")
+    fp = data_path(cfg)
+    print(f"data file  : {fp}  {'✓' if fp.exists() else '✗ MISSING'}")
     print(f"config dir : {config_dir()}")
     print(
         f"op CLI     : {'✓ ' + (shutil.which('op') or '') if shutil.which('op') else '✗ not installed'}"
     )
     if not fp.exists():
         return 1
-    data = load_facts(cfg)
+    data = load_data(cfg)
     n = 0
     for key, entry in walk_entries(data):
         n += 1
@@ -441,6 +527,9 @@ def cmd_doctor(args, cfg) -> int:
                 problems += 1
         elif entry.get("value") in (None, ""):
             print(f"  ✗ {key}: {kind} without 'value'")
+            problems += 1
+        if "tags" in entry and not isinstance(entry.get("tags"), list):
+            print(f"  ✗ {key}: tags must be a list")
             problems += 1
     print(f"entries    : {n} ({problems} problem(s))")
     return 1 if problems else 0
@@ -453,7 +542,12 @@ def _print_children(prefix: str, node: dict) -> None:
     print(f"{prefix}/  (namespace)")
     for key, child in sorted(node.items()):
         kind = entry_kind(child) if is_entry(child) else "namespace"
-        print(f"  {prefix}.{key}  [{kind}]")
+        line = f"  {prefix}.{key}  [{kind}]"
+        if is_entry(child):
+            note = one_line(child.get("note", ""))
+            if note:
+                line += f"  — {note}"
+        print(line)
 
 
 def _suggest(data: dict, key: str) -> None:
@@ -482,7 +576,7 @@ SUBCOMMANDS = {
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="recall", description="A small data jar for facts you fetch often."
+        prog="recall", description="A small data jar for data you fetch often."
     )
     p.add_argument("--version", action="version", version=f"recall {__version__}")
     sub = p.add_subparsers(dest="command")
@@ -526,7 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
     js.add_argument("key", nargs="?", default="")
     js.set_defaults(func=cmd_json)
 
-    dr = sub.add_parser("doctor", help="validate the facts file and environment")
+    dr = sub.add_parser("doctor", help="validate the data file and environment")
     dr.set_defaults(func=cmd_doctor)
 
     ex = sub.add_parser("export", help="alias for: json (whole tree)")
