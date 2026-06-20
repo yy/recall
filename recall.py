@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 SECRET_KINDS = {"secret"}
 SUPPORTED_SECRET_BACKENDS = {"1password", "keychain", "op"}
@@ -46,6 +46,10 @@ DEFAULT_CONFIG = {
     "clipboard_clear_seconds": 45,
     "default_backend": "1password",
 }
+# Generous enough to cover a 1Password biometric unlock prompt (the desktop-app
+# integration can make `op item get` take several seconds), but bounded so a
+# wedged `op` can't hang `recall secret` indefinitely.
+ONEPASSWORD_METADATA_TIMEOUT_SECONDS = 15
 
 STARTER_DATA = (
     '{"key": "orcid.self", "kind": "id", "value": "0000-0000-0000-0000", '
@@ -732,32 +736,68 @@ def onepassword_deeplink(ref: str) -> str | None:
                 capture_output=True,
                 text=True,
                 check=True,
+                timeout=ONEPASSWORD_METADATA_TIMEOUT_SECONDS,
             ).stdout
         )
         item_id = meta.get("id")
         vault_id = (meta.get("vault") or {}).get("id")
-        who = json.loads(
-            subprocess.run(
-                ["op", "whoami", "--format", "json"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
-        account = who.get("account_uuid")
-        if not (item_id and vault_id):
-            return None
-        link = f"onepassword://view-item/?v={vault_id}&i={item_id}"
-        if account:
-            link += f"&a={account}"
-        return link
     except (
         subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
         json.JSONDecodeError,
         KeyError,
         AttributeError,
     ):
         return None
+    if not (item_id and vault_id):
+        return None
+    link = f"onepassword://view-item/?v={vault_id}&i={item_id}"
+    # The account id only disambiguates multiple 1Password accounts and is
+    # optional in the deep link. A failed `op whoami` (common when only the
+    # desktop-app integration is enabled, not an `op signin` session) must not
+    # discard an otherwise-usable link, so fetch it separately and tolerate
+    # failure.
+    account = onepassword_account_uuid()
+    if account:
+        link += f"&a={account}"
+    return link
+
+
+def _op_json(args: list[str]) -> Any:
+    """Run an `op ... --format json` command; return parsed JSON or None."""
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=ONEPASSWORD_METADATA_TIMEOUT_SECONDS,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def onepassword_account_uuid() -> str | None:
+    """Return the 1Password account UUID, or None if it can't be determined.
+
+    Prefers `op whoami` (the active account). Falls back to `op account list`
+    when whoami is unavailable — with only the desktop-app integration enabled,
+    `op account list` answers but `op whoami` reports "not signed in". The
+    fallback is only unambiguous for a single configured account.
+    """
+    who = _op_json(["op", "whoami", "--format", "json"])
+    if isinstance(who, dict) and who.get("account_uuid"):
+        return who["account_uuid"]
+    accounts = _op_json(["op", "account", "list", "--format", "json"])
+    if isinstance(accounts, list) and len(accounts) == 1:
+        account = accounts[0]
+        if isinstance(account, dict):
+            return account.get("account_uuid") or account.get("id")
+    return None
 
 
 def cmd_open(args, cfg) -> int:
