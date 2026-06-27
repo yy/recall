@@ -44,7 +44,7 @@ def test_to_clipboard_closes_background_pipe_for_delayed_clear(monkeypatch) -> N
             [
                 "sh",
                 "-c",
-                'sleep 45; current=$(pbpaste); if [ "$current" = "$(cat)" ]; then printf "" | pbcopy; fi',
+                'expected=$(cat); sleep 45; current=$(pbpaste); if [ "$current" = "$expected" ]; then printf "" | pbcopy; fi',
             ],
             recall.subprocess.PIPE,
             True,

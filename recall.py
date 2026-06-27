@@ -436,10 +436,13 @@ def to_clipboard(text: str, clear_after: int | None = None) -> None:
     subprocess.run(["pbcopy"], input=text.encode(), check=True)
     if clear_after and clear_after > 0:
         # Detached: clear the clipboard later only if it still holds our value.
+        # Read stdin before sleeping so large values cannot block the caller on
+        # a full pipe while the background process waits to clear the clipboard.
         script = (
+            f"expected=$(cat); "
             f"sleep {int(clear_after)}; "
             f"current=$(pbpaste); "
-            f'if [ "$current" = "$(cat)" ]; then printf "" | pbcopy; fi'
+            f'if [ "$current" = "$expected" ]; then printf "" | pbcopy; fi'
         )
         proc = subprocess.Popen(
             ["sh", "-c", script],
