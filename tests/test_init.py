@@ -301,9 +301,9 @@ def test_init_reports_data_file_write_errors(tmp_path, monkeypatch, capsys) -> N
 
     captured = capsys.readouterr()
     assert status == 1
-    assert "wrote config" in captured.out
+    assert "wrote config" not in captured.out
     assert "can't write data file" in captured.err
-    assert (recall_dir / "config.json").exists()
+    assert not (recall_dir / "config.json").exists()
     assert not data_file.exists()
 
 

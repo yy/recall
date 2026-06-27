@@ -606,20 +606,8 @@ def cmd_init(args, cfg) -> int:
     else:
         overwrite_config = True
 
-    config_text = build_config_text(data_file, clear_seconds, backend)
-    try:
-        write_text_file(cfg_path, config_text, force=overwrite_config)
-    except OSError as exc:
-        detail = exc.strerror or str(exc)
-        print(
-            f"recall: can't write config file {cfg_path}: {detail}",
-            file=sys.stderr,
-        )
-        return 1
-    print(f"wrote config: {cfg_path}")
-
     if data_path_for_write.exists():
-        print(f"data file already exists: {data_path_for_write}")
+        data_file_message = f"data file already exists: {data_path_for_write}"
     else:
         text = STARTER_DATA if sample else ""
         try:
@@ -631,7 +619,20 @@ def cmd_init(args, cfg) -> int:
                 file=sys.stderr,
             )
             return 1
-        print(f"created data file: {data_path_for_write}")
+        data_file_message = f"created data file: {data_path_for_write}"
+
+    config_text = build_config_text(data_file, clear_seconds, backend)
+    try:
+        write_text_file(cfg_path, config_text, force=overwrite_config)
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        print(
+            f"recall: can't write config file {cfg_path}: {detail}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"wrote config: {cfg_path}")
+    print(data_file_message)
 
     print("\nNext steps:")
     print(f"  edit {data_path_for_write}")
