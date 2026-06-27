@@ -123,3 +123,41 @@ def test_open_does_not_audit_failed_open(monkeypatch, capsys) -> None:
     assert status == 1
     assert audit_calls == []
     assert "failed to open 'insurance.portal'" in capsys.readouterr().err
+
+
+def test_open_reports_launch_oserror_without_auditing(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        recall,
+        "load_data",
+        lambda cfg: {
+            "insurance": {
+                "portal": {
+                    "kind": "url",
+                    "value": "https://example.com/login",
+                }
+            }
+        },
+    )
+
+    audit_calls = []
+
+    def fake_audit(command: str, key: str) -> None:
+        audit_calls.append((command, key))
+
+    def fake_run(args, check=False):
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(recall, "audit", fake_audit)
+    monkeypatch.setattr(recall.subprocess, "run", fake_run)
+
+    status = recall.cmd_open(
+        argparse.Namespace(key="insurance.portal"),
+        {},
+    )
+
+    assert status == 1
+    assert audit_calls == []
+    assert (
+        "failed to open 'insurance.portal': No such file or directory"
+        in capsys.readouterr().err
+    )

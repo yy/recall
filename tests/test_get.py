@@ -85,3 +85,44 @@ def test_get_file_show_resolves_relative_path_against_data_file(
         str(recall_dir / "private" / "snippets" / "reply.md") + "\n"
     )
     assert audit_calls == [("get", "email.reply-template")]
+
+
+def test_main_bare_namespace_lists_children_without_auditing(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(recall, "load_config", lambda: {})
+    monkeypatch.setattr(
+        recall,
+        "load_data",
+        lambda cfg: {
+            "insurance": {
+                "member-id": {
+                    "kind": "account",
+                    "value": "MEMBER-ID-EXAMPLE",
+                    "note": "Health insurance member ID",
+                },
+                "portal": {
+                    "kind": "url",
+                    "value": "https://example.com/login",
+                    "note": "Claims portal",
+                },
+            }
+        },
+    )
+
+    audit_calls = []
+
+    def fake_audit(command: str, key: str) -> None:
+        audit_calls.append((command, key))
+
+    monkeypatch.setattr(recall, "audit", fake_audit)
+
+    status = recall.main(["insurance"])
+
+    assert status == 0
+    assert capsys.readouterr().out == (
+        "insurance/  (namespace)\n"
+        "  insurance.member-id  [account]  — Health insurance member ID\n"
+        "  insurance.portal  [url]  — Claims portal\n"
+    )
+    assert audit_calls == []

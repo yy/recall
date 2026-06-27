@@ -95,6 +95,38 @@ def test_secret_copy_does_not_audit_failed_clipboard_copy(monkeypatch) -> None:
     assert audit_calls == []
 
 
+def test_secret_copy_keychain_requires_security_cli(monkeypatch) -> None:
+    monkeypatch.setattr(
+        recall,
+        "load_data",
+        lambda cfg: {
+            "github": {
+                "token": {
+                    "kind": "secret",
+                    "backend": "keychain",
+                    "ref": "github-token",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(recall.shutil, "which", lambda cmd: None)
+
+    audit_calls = []
+
+    def fake_audit(command: str, key: str) -> None:
+        audit_calls.append((command, key))
+
+    monkeypatch.setattr(recall, "audit", fake_audit)
+
+    with pytest.raises(SystemExit, match="Keychain CLI 'security' not found"):
+        recall.cmd_secret(
+            argparse.Namespace(key="github.token", copy=True),
+            {"clipboard_clear_seconds": 45},
+        )
+
+    assert audit_calls == []
+
+
 def test_secret_open_audits_only_after_success(monkeypatch) -> None:
     monkeypatch.setattr(
         recall,
@@ -179,6 +211,33 @@ def test_open_in_vault_reports_failure_when_opening_item_link_fails(
 
     assert status == 1
     assert "failed to open 1Password item for 'github.token'" in capsys.readouterr().err
+
+
+def test_open_in_vault_reports_launch_oserror_when_opening_item_link(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(
+        recall,
+        "onepassword_deeplink",
+        lambda ref: "onepassword://view-item/?v=vault&i=item",
+    )
+
+    def fake_run(args, check=False):
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(recall.subprocess, "run", fake_run)
+
+    status = recall.open_in_vault(
+        {"kind": "secret", "ref": "op://Private/GitHub/token"},
+        {"default_backend": "1password"},
+        "github.token",
+    )
+
+    assert status == 1
+    assert (
+        "failed to open 1Password item for 'github.token': No such file or directory"
+        in capsys.readouterr().err
+    )
 
 
 def test_open_in_vault_reports_failure_when_opening_app_fallback_fails(

@@ -475,6 +475,8 @@ def vault_read(entry: dict, cfg: dict) -> str:
             sys.exit(f"recall: op read failed: {proc.stderr.strip()}")
         return proc.stdout.rstrip("\n")
     if backend == "keychain":
+        if not shutil.which("security"):
+            sys.exit("recall: Keychain CLI 'security' not found")
         proc = subprocess.run(
             ["security", "find-generic-password", "-s", ref, "-w"],
             capture_output=True,
@@ -605,14 +607,30 @@ def cmd_init(args, cfg) -> int:
         overwrite_config = True
 
     config_text = build_config_text(data_file, clear_seconds, backend)
-    write_text_file(cfg_path, config_text, force=overwrite_config)
+    try:
+        write_text_file(cfg_path, config_text, force=overwrite_config)
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        print(
+            f"recall: can't write config file {cfg_path}: {detail}",
+            file=sys.stderr,
+        )
+        return 1
     print(f"wrote config: {cfg_path}")
 
     if data_path_for_write.exists():
         print(f"data file already exists: {data_path_for_write}")
     else:
         text = STARTER_DATA if sample else ""
-        write_text_file(data_path_for_write, text, force=False)
+        try:
+            write_text_file(data_path_for_write, text, force=False)
+        except OSError as exc:
+            detail = exc.strerror or str(exc)
+            print(
+                f"recall: can't write data file {data_path_for_write}: {detail}",
+                file=sys.stderr,
+            )
+            return 1
         print(f"created data file: {data_path_for_write}")
 
     print("\nNext steps:")
@@ -694,18 +712,14 @@ def open_in_vault(entry: dict, cfg: dict, key: str) -> int:
             return 1
         link = onepassword_deeplink(ref)
         if link:
-            result = subprocess.run(["open", link], check=False)
-            if result.returncode == 0:
+            if _open_with_system(link, f"1Password item for '{key}'"):
                 print(f"opened {key} in 1Password — copy the secret manually")
                 return 0
-            print(f"recall: failed to open 1Password item for '{key}'", file=sys.stderr)
             return 1
 
-        result = subprocess.run(["open", "onepassword://"], check=False)
-        if result.returncode == 0:
+        if _open_with_system("onepassword://", "1Password"):
             print(f"opened 1Password — find: {ref}")
             return 0
-        print("recall: failed to open 1Password", file=sys.stderr)
         return 1
     if backend == "keychain":
         print(
@@ -819,12 +833,23 @@ def cmd_open(args, cfg) -> int:
     if target is None:
         print(f"recall: '{args.key}' has no value to open", file=sys.stderr)
         return 1
-    result = subprocess.run(["open", target], check=False)
-    if result.returncode != 0:
-        print(f"recall: failed to open '{args.key}'", file=sys.stderr)
+    if not _open_with_system(target, f"'{args.key}'"):
         return 1
     audit("open", args.key)
     return 0
+
+
+def _open_with_system(target: str, label: str) -> bool:
+    try:
+        result = subprocess.run(["open", target], check=False)
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        print(f"recall: failed to open {label}: {detail}", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        print(f"recall: failed to open {label}", file=sys.stderr)
+        return False
+    return True
 
 
 def cmd_search(args, cfg) -> int:

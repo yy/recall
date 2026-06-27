@@ -261,6 +261,52 @@ def test_init_rejects_unknown_default_backend(
     )
 
 
+def test_init_reports_config_write_errors(tmp_path, monkeypatch, capsys) -> None:
+    recall_dir = tmp_path / "recall"
+    monkeypatch.setenv("RECALL_DIR", str(recall_dir))
+
+    original_write_text = recall.Path.write_text
+
+    def fake_write_text(self, text, *args, **kwargs):
+        if self == recall_dir / "config.json":
+            raise OSError(13, "Permission denied")
+        return original_write_text(self, text, *args, **kwargs)
+
+    monkeypatch.setattr(recall.Path, "write_text", fake_write_text)
+
+    status = recall.main(["init", "--yes", "--no-sample"])
+
+    assert status == 1
+    assert "can't write config file" in capsys.readouterr().err
+    assert not (recall_dir / "config.json").exists()
+
+
+def test_init_reports_data_file_write_errors(tmp_path, monkeypatch, capsys) -> None:
+    recall_dir = tmp_path / "recall"
+    data_file = tmp_path / "private" / "data.jsonl"
+    monkeypatch.setenv("RECALL_DIR", str(recall_dir))
+
+    original_write_text = recall.Path.write_text
+
+    def fake_write_text(self, text, *args, **kwargs):
+        if self == data_file:
+            raise OSError(28, "No space left on device")
+        return original_write_text(self, text, *args, **kwargs)
+
+    monkeypatch.setattr(recall.Path, "write_text", fake_write_text)
+
+    status = recall.main(
+        ["init", "--yes", "--data-file", str(data_file), "--no-sample"]
+    )
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "wrote config" in captured.out
+    assert "can't write data file" in captured.err
+    assert (recall_dir / "config.json").exists()
+    assert not data_file.exists()
+
+
 def test_audit_creates_config_dir_and_appends_log(tmp_path, monkeypatch) -> None:
     recall_dir = tmp_path / "recall"
     monkeypatch.setenv("RECALL_DIR", str(recall_dir))
