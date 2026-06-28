@@ -50,6 +50,7 @@ DEFAULT_CONFIG = {
 # integration can make `op item get` take several seconds), but bounded so a
 # wedged `op` can't hang `recall secret` indefinitely.
 ONEPASSWORD_METADATA_TIMEOUT_SECONDS = 15
+VAULT_READ_TIMEOUT_SECONDS = 30
 
 STARTER_DATA = (
     '{"key": "orcid.self", "kind": "id", "value": "0000-0000-0000-0000", '
@@ -473,18 +474,34 @@ def vault_read(entry: dict, cfg: dict) -> str:
     if backend in ("1password", "op"):
         if not shutil.which("op"):
             sys.exit("recall: 1Password CLI 'op' not found")
-        proc = subprocess.run(["op", "read", ref], capture_output=True, text=True)
+        try:
+            proc = subprocess.run(
+                ["op", "read", ref],
+                capture_output=True,
+                text=True,
+                timeout=VAULT_READ_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            sys.exit(
+                f"recall: op read timed out after {VAULT_READ_TIMEOUT_SECONDS}s"
+            )
         if proc.returncode != 0:
             sys.exit(f"recall: op read failed: {proc.stderr.strip()}")
         return proc.stdout.rstrip("\n")
     if backend == "keychain":
         if not shutil.which("security"):
             sys.exit("recall: Keychain CLI 'security' not found")
-        proc = subprocess.run(
-            ["security", "find-generic-password", "-s", ref, "-w"],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            proc = subprocess.run(
+                ["security", "find-generic-password", "-s", ref, "-w"],
+                capture_output=True,
+                text=True,
+                timeout=VAULT_READ_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            sys.exit(
+                f"recall: keychain lookup timed out after {VAULT_READ_TIMEOUT_SECONDS}s"
+            )
         if proc.returncode != 0:
             sys.exit(f"recall: keychain lookup failed for {ref}")
         return proc.stdout.rstrip("\n")

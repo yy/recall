@@ -127,6 +127,44 @@ def test_secret_copy_keychain_requires_security_cli(monkeypatch) -> None:
     assert audit_calls == []
 
 
+def test_vault_read_op_times_out_cleanly(monkeypatch) -> None:
+    monkeypatch.setattr(recall.shutil, "which", lambda cmd: "/usr/bin/op")
+
+    def fake_run(args, **kwargs):
+        assert args == ["op", "read", "op://Private/GitHub/token"]
+        assert kwargs["timeout"] == recall.VAULT_READ_TIMEOUT_SECONDS
+        raise recall.subprocess.TimeoutExpired(
+            cmd=args, timeout=recall.VAULT_READ_TIMEOUT_SECONDS
+        )
+
+    monkeypatch.setattr(recall.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="op read timed out after 30s"):
+        recall.vault_read(
+            {"kind": "secret", "ref": "op://Private/GitHub/token"},
+            {"default_backend": "1password"},
+        )
+
+
+def test_vault_read_keychain_times_out_cleanly(monkeypatch) -> None:
+    monkeypatch.setattr(recall.shutil, "which", lambda cmd: "/usr/bin/security")
+
+    def fake_run(args, **kwargs):
+        assert args == ["security", "find-generic-password", "-s", "github-token", "-w"]
+        assert kwargs["timeout"] == recall.VAULT_READ_TIMEOUT_SECONDS
+        raise recall.subprocess.TimeoutExpired(
+            cmd=args, timeout=recall.VAULT_READ_TIMEOUT_SECONDS
+        )
+
+    monkeypatch.setattr(recall.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="keychain lookup timed out after 30s"):
+        recall.vault_read(
+            {"kind": "secret", "backend": "keychain", "ref": "github-token"},
+            {"default_backend": "1password"},
+        )
+
+
 def test_secret_open_audits_only_after_success(monkeypatch) -> None:
     monkeypatch.setattr(
         recall,
