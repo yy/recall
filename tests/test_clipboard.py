@@ -1,4 +1,20 @@
+import subprocess
+
+import pytest
+
 import recall
+
+
+def test_to_clipboard_reports_pbcopy_failure(monkeypatch) -> None:
+    monkeypatch.setattr(recall.shutil, "which", lambda cmd: "/usr/bin/pbcopy")
+
+    def fake_run(args, *, input=None, check=False, **kwargs):
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(recall.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="failed to copy to clipboard: pbcopy exited 1"):
+        recall.to_clipboard("secret-value")
 
 
 def test_to_clipboard_closes_background_pipe_for_delayed_clear(monkeypatch) -> None:

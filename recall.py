@@ -434,7 +434,13 @@ def validate_backend_name(backend: str, *, path: Path, label: str, field: str) -
 def to_clipboard(text: str, clear_after: int | None = None) -> None:
     if not shutil.which("pbcopy"):
         sys.exit("recall: pbcopy not found (macOS only for now)")
-    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+    try:
+        subprocess.run(["pbcopy"], input=text.encode(), check=True)
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        sys.exit(f"recall: failed to copy to clipboard: {detail}")
+    except subprocess.CalledProcessError as exc:
+        sys.exit(f"recall: failed to copy to clipboard: pbcopy exited {exc.returncode}")
     if clear_after and clear_after > 0:
         # Detached: clear the clipboard later only if it still holds our value.
         # Read stdin before sleeping so large values cannot block the caller on
